@@ -1,0 +1,6 @@
+{
+  "buildCommand": "cd Code && npm install && npm run build",
+  "outputDirectory": "Code/dist",
+  "installCommand": "cd Code && npm install",
+  "framework": "vue"
+}
