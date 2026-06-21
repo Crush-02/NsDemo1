@@ -18,6 +18,7 @@ export interface CellData {
     fc?: string
     bg?: string
     ht?: number
+    tb?: number
   }
 }
 

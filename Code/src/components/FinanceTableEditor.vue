@@ -547,7 +547,7 @@ async function exportExcel() {
     if (m && typeof m.r === 'number') {
       const startCell = ws.getCell(m.r + 1, m.c + 1)
       const endCell = ws.getCell(m.r + m.rs, m.c + m.cs)
-      ws.mergeCells(startCell.row, startCell.col, endCell.row, endCell.col)
+      ws.mergeCells(Number(startCell.row), Number(startCell.col), Number(endCell.row), Number(endCell.col))
     }
   }
 
