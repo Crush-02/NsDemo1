@@ -244,15 +244,15 @@ let blurDebounceTimer: number | null = null
 let pendingBlurs: { row: number; col: number }[] = []
 
 /**
- * ON_INPUT: 即时校验单个单元格并更新样式
+ * ON_INPUT: 即时校验单个单元格并更新样式（批量模式时不立即刷新渲染）
  */
-export function onCellInput(row: number, col: number) {
+export function onCellInput(row: number, col: number, batch = false) {
   clearCellResult(row, col)
   const result = validateCell(row, col)
   setCellResult(row, col, result)
   applyCellStyle(row, col, result, false)
   updatePendingState(row, col)
-  flushStyleBatchSync()
+  if (!batch) flushStyleBatchSync()
 }
 
 /** ON_BLUR: 失焦校验（防抖+分离跨行），支持多个pending */
@@ -275,6 +275,8 @@ export function onCellBlur(row: number, col: number) {
         crossRowCols.add(c)
       }
     }
+    // 所有行校验完毕后，统一刷新一次渲染
+    flushStyleBatchSync()
     // 一次性触发所有相关的跨行校验
     if (crossRowCols.size > 0) {
       scheduleCrossRowValidation(Array.from(crossRowCols))
@@ -322,7 +324,7 @@ function executeBlurValidation(row: number, col: number) {
   }
 
   markStatsDirty()
-  flushStyleBatchSync()
+  // 不在此处刷新渲染，由 onCellBlur 统一刷新
 
   // 通知调度器此行已被编辑（如果调度器正在运行）
   if (scheduler.isRunning) {
@@ -661,6 +663,7 @@ export function useValidationStore() {
     state, onCellInput, onCellBlur, runFullValidation,
     startValidation, waitForValidation, cancelValidation, isValidationRunning,
     getCellErrors, getAllCellErrors, applyAllValidationStyles, applyAllStylesFromResults, setRowResults,
+    flushStyles: flushStyleBatchSync,
     cleanupTimers,
   }
 }

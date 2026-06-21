@@ -187,16 +187,19 @@ function initLuckysheet(extraCelldata?: CellData[]) {
         if (lastSelectionSnapshot.size > 0) {
           const changedRows = new Set<number>()
           const changedCols = new Set<number>()
+          const isBatch = lastSelectionSnapshot.size > 1
           for (const [key, oldVal] of lastSelectionSnapshot.entries()) {
             const [rs, cs] = key.split('-')
             const row = Number(rs), col = Number(cs)
             const newVal = getCellValue(row, col)
             if (oldVal !== newVal) {
-              validation.onCellInput(row, col)
+              validation.onCellInput(row, col, isBatch)
               changedRows.add(row)
               changedCols.add(col)
             }
           }
+          // 批量模式下统一刷新一次渲染
+          if (isBatch) validation.flushStyles()
           // 对变化的行和列触发blur校验（使用实际变化的列以触发正确的跨行校验）
           for (const row of changedRows) {
             for (const col of changedCols) {

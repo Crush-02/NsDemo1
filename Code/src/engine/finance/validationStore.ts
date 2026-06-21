@@ -228,13 +228,13 @@ export function applyAllValidationStyles() {
 let blurDebounceTimer: number | null = null
 let pendingBlurs: { row: number; col: number }[] = []
 
-export function onCellInput(row: number, col: number) {
+export function onCellInput(row: number, col: number, batch = false) {
   clearCellResult(row, col)
   const result = validateCell(row, col)
   setCellResult(row, col, result)
   applyCellStyle(row, col, result, false)
   updatePendingState(row, col)
-  flushStyleBatchSync()
+  if (!batch) flushStyleBatchSync()
 }
 
 export function onCellBlur(row: number, col: number) {
@@ -249,6 +249,8 @@ export function onCellBlur(row: number, col: number) {
     for (const { row: r, col: c } of items) {
       executeBlurValidation(r, c)
     }
+    // 所有行校验完毕后，统一刷新一次渲染
+    flushStyleBatchSync()
   }, 200)
 }
 
@@ -289,7 +291,7 @@ function executeBlurValidation(row: number, col: number) {
   }
 
   markStatsDirty()
-  flushStyleBatchSync()
+  // 不在此处刷新渲染，由 onCellBlur 统一刷新
 
   // 通知调度器此行已被编辑（如果调度器正在运行）
   if (financeScheduler.isRunning) {
@@ -605,6 +607,7 @@ export function useFinanceValidationStore() {
     onCellInput, onCellBlur, runFullValidation,
     startValidation, waitForValidation, cancelValidation, isValidationRunning,
     getCellErrors, getAllCellErrors, applyAllValidationStyles, applyAllStylesFromResults,
+    flushStyles: flushStyleBatchSync,
     cleanupTimers,
   }
 }
