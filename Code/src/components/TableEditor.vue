@@ -193,17 +193,25 @@ function initLuckysheet(extraCelldata?: CellData[]) {
             const row = Number(rs), col = Number(cs)
             const newVal = getCellValue(row, col)
             if (oldVal !== newVal) {
-              validation.onCellInput(row, col, isBatch)
+              if (isBatch) {
+                // 批量模式：仅清除结果，不做逐格校验
+                validation.onCellInput(row, col, true)
+              } else {
+                validation.onCellInput(row, col, false)
+              }
               changedRows.add(row)
               changedCols.add(col)
             }
           }
-          // 批量模式下统一刷新一次渲染
-          if (isBatch) validation.flushStyles()
-          // 对变化的行和列触发blur校验（使用实际变化的列以触发正确的跨行校验）
-          for (const row of changedRows) {
-            for (const col of changedCols) {
-              validation.onCellBlur(row, col)
+          if (isBatch) {
+            // 批量模式：整行校验 + flowdata直接刷新
+            validation.onBatchInputComplete(Array.from(changedRows), Array.from(changedCols))
+          } else {
+            // 单格模式：触发blur校验
+            for (const row of changedRows) {
+              for (const col of changedCols) {
+                validation.onCellBlur(row, col)
+              }
             }
           }
         }

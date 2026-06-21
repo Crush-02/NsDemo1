@@ -241,16 +241,23 @@ function initLuckysheet(extraCelldata?: CellData[]) {
             const row = Number(rs), col = Number(cs)
             const newVal = getCellValue(row, col)
             if (oldVal !== newVal) {
-              validation.onCellInput(row, col, isBatch)
+              if (isBatch) {
+                validation.onCellInput(row, col, true)
+              } else {
+                validation.onCellInput(row, col, false)
+              }
               changedRows.add(row)
               changedCols.add(col)
             }
           }
-          // 批量模式下统一刷新一次渲染
-          if (isBatch) validation.flushStyles()
-          for (const row of changedRows) {
-            for (const col of changedCols) {
-              validation.onCellBlur(row, col)
+          if (isBatch) {
+            // 批量模式：整行校验 + flowdata直接刷新
+            validation.onBatchInputComplete(Array.from(changedRows), Array.from(changedCols))
+          } else {
+            for (const row of changedRows) {
+              for (const col of changedCols) {
+                validation.onCellBlur(row, col)
+              }
             }
           }
         }

@@ -230,11 +230,84 @@ let pendingBlurs: { row: number; col: number }[] = []
 
 export function onCellInput(row: number, col: number, batch = false) {
   clearCellResult(row, col)
-  const result = validateCell(row, col)
-  setCellResult(row, col, result)
-  applyCellStyle(row, col, result, false)
-  updatePendingState(row, col)
-  if (!batch) flushStyleBatchSync()
+  if (batch) {
+    // 批量模式：跳过单格校验，只清除结果
+    applyCellStyle(row, col, null, false)
+  } else {
+    const result = validateCell(row, col)
+    setCellResult(row, col, result)
+    applyCellStyle(row, col, result, false)
+    updatePendingState(row, col)
+    flushStyleBatchSync()
+  }
+}
+
+/** 批量输入后的整行校验（由 cellMousedown 调用） */
+export function onBatchInputComplete(changedRows: number[], changedCols: number[]) {
+  for (const row of changedRows) {
+    executeBlurValidation(row, -1)
+  }
+  // 直接修改flowdata批量应用样式
+  applyStylesViaFlowdata()
+  // 触发跨行校验
+  for (const col of changedCols) {
+    if (CROSS_ROW_COL_MAP[col]) {
+      scheduleCrossRowValidation(col)
+    }
+  }
+}
+
+/** 通过直接修改flowdata批量应用样式 */
+function applyStylesViaFlowdata() {
+  const ls = (window as any).luckysheet
+  if (!ls) return
+
+  cancelStyleBatch()
+
+  const flowdata = typeof ls.flowdata === 'function' ? ls.flowdata() : null
+  if (!flowdata) {
+    flushStyleBatchSync()
+    return
+  }
+
+  const styleMap = new Map<string, { bd: any; bg?: string }>()
+  financeState.results.forEach((results, key) => {
+    if (!results.length) return
+    const worst = results.reduce((a, b) => {
+      const o: Record<Severity, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 }
+      return o[a.severity] <= o[b.severity] ? a : b
+    })
+    styleMap.set(key, worst.severity === 'CRITICAL'
+      ? { bd: { borderType: 'border-all', style: '2', color: '#F56C6C' }, bg: '#FEF0F0' }
+      : { bd: { borderType: 'border-all', style: '2', color: '#E6A23C' } })
+  })
+  financeState.pendingCells.forEach((key) => {
+    if (styleMap.has(key)) return
+    styleMap.set(key, { bd: { borderType: 'border-all', style: '3', color: '#E6A23C' }, bg: '#FDF6EC' })
+  })
+
+  for (const [key, style] of styleMap.entries()) {
+    const [rs, cs] = key.split('-')
+    const row = Number(rs), col = Number(cs)
+    if (!flowdata[row]) continue
+    let cell = flowdata[row][col]
+    if (!cell) {
+      cell = { v: ' ', m: ' ', ct: { fa: 'General', t: 'g' } }
+      flowdata[row][col] = cell
+    }
+    if (cell.v === null || cell.v === undefined || String(cell.v).trim() === '') {
+      cell.v = ' '
+      cell.m = ' '
+    }
+    cell.bd = style.bd
+    if (style.bg) cell.bg = style.bg
+    else delete cell.bg
+  }
+
+  try {
+    if (ls.jfrefreshgrid) ls.jfrefreshgrid()
+    else if (ls.refresh) ls.refresh()
+  } catch { /* 忽略 */ }
 }
 
 export function onCellBlur(row: number, col: number) {
@@ -282,8 +355,10 @@ function executeBlurValidation(row: number, col: number) {
 
   const colsToUpdate = new Set<number>()
   for (const r of rowAllResults) colsToUpdate.add(r.col)
-  getAffectedTargetCols(col).forEach((c) => colsToUpdate.add(c))
-  colsToUpdate.add(col)
+  if (col >= 0) {
+    getAffectedTargetCols(col).forEach((c) => colsToUpdate.add(c))
+    colsToUpdate.add(col)
+  }
 
   for (const c of colsToUpdate) {
     applyCellStyle(row, c, getWorstResult(row, c), false)
@@ -604,7 +679,7 @@ export function cleanupTimers() {
 export function useFinanceValidationStore() {
   return {
     state: financeState,
-    onCellInput, onCellBlur, runFullValidation,
+    onCellInput, onCellBlur, onBatchInputComplete, runFullValidation,
     startValidation, waitForValidation, cancelValidation, isValidationRunning,
     getCellErrors, getAllCellErrors, applyAllValidationStyles, applyAllStylesFromResults,
     flushStyles: flushStyleBatchSync,

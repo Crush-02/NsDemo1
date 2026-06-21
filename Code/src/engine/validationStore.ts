@@ -244,15 +244,98 @@ let blurDebounceTimer: number | null = null
 let pendingBlurs: { row: number; col: number }[] = []
 
 /**
- * ON_INPUT: 即时校验单个单元格并更新样式（批量模式时不立即刷新渲染）
+ * ON_INPUT: 即时校验单个单元格并更新样式
+ * @param batch 批量模式下仅清除结果和入队样式，不刷新渲染
  */
 export function onCellInput(row: number, col: number, batch = false) {
   clearCellResult(row, col)
-  const result = validateCell(row, col)
-  setCellResult(row, col, result)
-  applyCellStyle(row, col, result, false)
-  updatePendingState(row, col)
-  if (!batch) flushStyleBatchSync()
+  if (batch) {
+    // 批量模式：跳过单格校验，只清除结果。blur阶段会做整行校验
+    applyCellStyle(row, col, null, false)
+  } else {
+    const result = validateCell(row, col)
+    setCellResult(row, col, result)
+    applyCellStyle(row, col, result, false)
+    updatePendingState(row, col)
+    flushStyleBatchSync()
+  }
+}
+
+/** 批量输入后的整行校验（由 cellMousedown 调用，替代逐格 onCellInput+onCellBlur） */
+export function onBatchInputComplete(changedRows: number[], changedCols: number[]) {
+  // 1. 对每行执行整行校验
+  const crossRowCols = new Set<number>()
+  for (const row of changedRows) {
+    executeBlurValidation(row, -1)
+  }
+  for (const col of changedCols) {
+    if (CROSS_ROW_COL_MAP[col]) crossRowCols.add(col)
+  }
+
+  // 2. 直接修改flowdata批量应用样式（避免逐个setCellFormat）
+  applyStylesViaFlowdata()
+
+  // 3. 触发跨行校验
+  if (crossRowCols.size > 0) {
+    scheduleCrossRowValidation(Array.from(crossRowCols))
+  }
+}
+
+/** 通过直接修改flowdata批量应用样式（性能远优于逐个setCellFormat） */
+function applyStylesViaFlowdata() {
+  const ls = (window as any).luckysheet
+  if (!ls) return
+
+  // 清空样式队列（改用flowdata方式）
+  cancelStyleBatch()
+
+  const flowdata = typeof ls.flowdata === 'function' ? ls.flowdata() : null
+  if (!flowdata) {
+    flushStyleBatchSync()
+    return
+  }
+
+  // 构建样式映射
+  const styleMap = new Map<string, { bd: any; bg?: string }>()
+  state.results.forEach((results, key) => {
+    if (!results.length) return
+    const worst = results.reduce((a, b) => {
+      const o: Record<Severity, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 }
+      return o[a.severity] <= o[b.severity] ? a : b
+    })
+    styleMap.set(key, worst.severity === 'CRITICAL'
+      ? { bd: { borderType: 'border-all', style: '2', color: '#F56C6C' }, bg: '#FEF0F0' }
+      : { bd: { borderType: 'border-all', style: '2', color: '#E6A23C' } })
+  })
+  state.pendingCells.forEach((key) => {
+    if (styleMap.has(key)) return
+    styleMap.set(key, { bd: { borderType: 'border-all', style: '3', color: '#E6A23C' }, bg: '#FDF6EC' })
+  })
+
+  // 直接修改flowdata
+  for (const [key, style] of styleMap.entries()) {
+    const [rs, cs] = key.split('-')
+    const row = Number(rs), col = Number(cs)
+    if (!flowdata[row]) continue
+    let cell = flowdata[row][col]
+    if (!cell) {
+      cell = { v: ' ', m: ' ', ct: { fa: 'General', t: 'g' } }
+      flowdata[row][col] = cell
+    }
+    if (cell.v === null || cell.v === undefined || String(cell.v).trim() === '') {
+      cell.v = ' '
+      cell.m = ' '
+    }
+    cell.bd = style.bd
+    if (style.bg) cell.bg = style.bg
+    else delete cell.bg
+  }
+
+  // 一次刷新画布
+  try {
+    if (ls.jfrefreshgrid) ls.jfrefreshgrid()
+    else if (ls.refresh) ls.refresh()
+  } catch { /* 忽略 */ }
 }
 
 /** ON_BLUR: 失焦校验（防抖+分离跨行），支持多个pending */
@@ -315,8 +398,10 @@ function executeBlurValidation(row: number, col: number) {
   // 更新样式（日常编辑不用空格占位）
   const colsToUpdate = new Set<number>()
   for (const r of rowAllResults) colsToUpdate.add(r.col)
-  getAffectedTargetCols(col).forEach((c) => colsToUpdate.add(c))
-  colsToUpdate.add(col)
+  if (col >= 0) {
+    getAffectedTargetCols(col).forEach((c) => colsToUpdate.add(c))
+    colsToUpdate.add(col)
+  }
 
   for (const c of colsToUpdate) {
     applyCellStyle(row, c, getWorstResult(row, c), false)
@@ -324,7 +409,7 @@ function executeBlurValidation(row: number, col: number) {
   }
 
   markStatsDirty()
-  // 不在此处刷新渲染，由 onCellBlur 统一刷新
+  // 不在此处刷新渲染，由调用方统一刷新
 
   // 通知调度器此行已被编辑（如果调度器正在运行）
   if (scheduler.isRunning) {
@@ -660,7 +745,7 @@ export function cleanupTimers() {
 
 export function useValidationStore() {
   return {
-    state, onCellInput, onCellBlur, runFullValidation,
+    state, onCellInput, onCellBlur, onBatchInputComplete, runFullValidation,
     startValidation, waitForValidation, cancelValidation, isValidationRunning,
     getCellErrors, getAllCellErrors, applyAllValidationStyles, applyAllStylesFromResults, setRowResults,
     flushStyles: flushStyleBatchSync,
