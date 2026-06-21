@@ -1,0 +1,32 @@
+schema_version: 1
+module_path: ""
+title: 物业数据智能校验与编辑系统
+scope:
+    - index.html
+    - package.json
+    - tsconfig.json
+    - tsconfig.node.json
+    - vite.config.ts
+    - 启动工具.bat
+    - src/
+    - package-lock.json
+    - src\App.vue
+    - src\components\CellTooltip.vue
+    - src\components\TableEditor.vue
+    - src\components\Toolbar.vue
+    - src\components\ValidationBar.vue
+    - src\components\ValidationPanel.vue
+    - src\engine\conditionalValidator.ts
+    - src\engine\crossRowValidator.ts
+    - src\engine\dependencyTracker.ts
+    - src\engine\simpleValidator.ts
+    - src\engine\types.ts
+    - src\engine\validationStore.ts
+    - src\main.ts
+    - src\types\index.ts
+    - src\utils\autoSave.ts
+    - src\utils\excelIO.ts
+    - src\vite-env.d.ts
+source_files: []
+depends_on: []
+related_to: []

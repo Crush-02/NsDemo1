@@ -1,0 +1,177 @@
+# Step 2 提示词 - 实现简单校验
+
+## 复制以下全部内容发送给DeepSeek
+
+---
+
+```
+# 任务
+
+在Step1搭建的Luckysheet框架基础上，实现基础的数据校验功能。
+本步只实现**无条件触发的简单规则**，不涉及条件依赖逻辑。
+
+# 前置条件
+
+Step1已完成：
+- ✅ Luckysheet已集成，表格可正常编辑
+- ✅ Excel导入/导出功能正常
+- ✅ 表头已定义（25列，第0行为表头）
+- ✅ 自动保存功能正常
+
+# 校验规则数据
+
+附件 validation_rules.json 包含20条校验规则。
+本步只实现其中**8条简单规则**（has_triggers=false的规则）：
+
+## 规则1: 房产简称_必填
+- 列号: A (col=0)
+- 校验: 不可为空，且在已填数据中唯一
+- 严重度: CRITICAL (红色)
+- 提示: "房产简称不可为空且在项目中唯一"
+
+## 规则6: 楼层_必填
+- 列号: B (col=1)
+- 校验: 不可为空，且必须为正整数(>0的整数)
+- 严重度: CRITICAL (红色)
+- 提示: "楼层不可为空且必须为正整数"
+- 错误示例: 0, -1, 1.5, "abc"
+- 正确示例: 1, 2, 10, 33
+
+## 规则10: 房号_必填
+- 列号: C (col=2)
+- 校验: 不可为空
+- 严重度: CRITICAL (红色)
+- 提示: "房号不可为空"
+
+## 规则13: 房产类型_必填
+- 列号: D (col=3)
+- 校验: 不可为空，且必须是以下枚举值之一
+- 有效值: 住宅, 车位, 商铺, 写字楼, 其他
+- 严重度: CRITICAL (红色)
+- 提示: "房产类型不可为空，请选择：住宅|车位|商铺|写字楼|其他"
+
+## 规则2: 格式_计费面积
+- 列号: E (col=4)
+- 校验: 如果有值，必须为正数，建议保留4位小数
+- 严重度: HIGH (橙色)
+- 提示: "计费面积应为正数，且需保留四位小数"
+- 正确示例: 123.4567
+- 错误示例: -100, abc
+
+## 规则9: 格式_日期
+- 列号: F/G/H/T/U (col=5,6,7,19,20)
+- 校验: 如果有值，必须为YYYY-MM-DD格式（严格匹配）
+- 严重度: HIGH (橙色)
+- 提示: "日期格式错误，正确格式为YYYY-MM-DD"
+- 正确示例: 2024-01-15
+- 错误示例: 2024/1/15, 2024-1-5, 20240115
+
+## 规则11: 格式_证件号码
+- 列号: K/P (col=10,15)
+- 校验: 如果有值，必须符合18位身份证号规则
+- 正则: /^[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]$/
+- 严重度: HIGH (橙色)
+- 提示: "证件号码格式校验不通过，需符合身份证号规则"
+
+## 规则4: 唯一性_房产业主
+- 校验: 同一房产不能重复绑定业主
+- 严重度: HIGH (橙色)
+- 提示: "同一房产不能重复绑定业主"
+- 说明: 本步暂不实现跨行校验，留到Step3
+
+# 校验触发时机
+
+采用两级触发：
+
+## Level 1: 输入时 (ON_INPUT)
+绑定到Luckysheet的cellUpdated事件。
+用户编辑完一个单元格后立即校验该单元格。
+只校验格式类规则（日期格式、数字格式、枚举值）。
+
+## Level 2: 导出前 (ON_SAVE)
+点击"导出Excel"按钮时，遍历所有行执行全量校验。
+如果有CRITICAL或HIGH级别的错误，阻止导出并显示错误列表。
+
+# UI反馈方式
+
+## 单元格样式
+- CRITICAL: 红色边框 + 浅红背景 (#FEF0F0)
+- HIGH: 橙色边框
+- 正常: 无特殊样式
+
+## Tooltip悬浮提示
+鼠标悬停在有错误的单元格上时，显示错误信息。
+使用Element Plus的el-tooltip组件，或自定义浮层。
+
+实现方式：
+1. 监听Luckysheet的cellMousedown事件获取当前单元格位置
+2. 查找该位置是否有校验错误
+3. 如果有，在单元格附近显示提示浮层
+
+## 错误统计栏
+页面底部显示一行状态栏：
+"✅ 已填写 X/Y 行 | ⚠️ N个警告 | ❌ M个错误"
+
+# 术语约束
+
+⚠️ UI中只允许显示"租户"，禁止出现"住户"。
+如果任何错误消息中包含"住户"，必须替换为"租户"后再展示。
+
+替换映射：
+- "住户客户类型" → "租户客户类型"
+- "住户联系人" → "租户联系人"
+
+# 代码结构建议
+
+```
+src/
+├── engine/
+│   ├── types.ts              # 类型定义
+│   ├── simpleValidator.ts    # 简单规则校验器（本步核心）
+│   └── validationStore.ts    # 校验结果状态管理
+├── components/
+│   ├── CellTooltip.vue       # 错误提示浮层
+│   └── ValidationBar.vue     # 底部状态栏
+```
+
+# simpleValidator.ts 核心接口
+
+```typescript
+interface ValidationResult {
+  isValid: boolean
+  ruleId: string
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM'
+  message: string
+  row: number
+  col: number
+}
+
+// 校验单个单元格
+function validateCell(row: number, col: number, value: string): ValidationResult | null
+
+// 校验一行数据（所有简单规则）
+function validateRow(row: number): ValidationResult[]
+
+// 校验全部数据
+function validateAll(): { errors: ValidationResult[]; warnings: ValidationResult[] }
+```
+
+# 输出要求
+
+1. 输出以下文件的完整代码：
+   - src/engine/types.ts
+   - src/engine/simpleValidator.ts
+   - src/engine/validationStore.ts
+   - src/components/CellTooltip.vue
+   - src/components/ValidationBar.vue
+   - 修改后的 TableEditor.vue（集成校验事件）
+   - 修改后的 Toolbar.vue（导出前校验）
+
+2. 确保代码可以直接运行，不要伪代码
+
+3. ❌ 不要实现条件依赖规则（Rule #7, #8, #12, #15, #16, #17, #19, #20）
+   这些是Step3的任务
+
+4. ❌ 不要实现跨行校验（唯一性检查、一致性检查）
+   这些也是Step3的任务
+```
