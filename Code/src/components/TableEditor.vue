@@ -39,7 +39,89 @@ import CellTooltip from './CellTooltip.vue'
 const cellTooltipRef = ref<InstanceType<typeof CellTooltip> | null>(null)
 const validation = useValidationStore()
 
-/** 校验遮罩层状态 */
+// ==================== 键盘拦截：Delete/Backspace 快速删除 ====================
+
+/** 键盘事件处理函数引用（用于清理） */
+let keydownHandler: ((e: KeyboardEvent) => void) | null = null
+
+/**
+ * 拦截 Delete/Backspace 键盘事件
+ * 当选区超过阈值时，绕过 Luckysheet 的慢速实现，使用我们的快速分帧删除
+ *
+ * 【关键改进】
+ * 原来的 BatchDefender 依赖 cellUpdated hook，但 Luckysheet 的 Delete 操作
+ * 根本不触发 cellUpdated！导致 BatchDefender 完全失效。
+ *
+ * 新方案直接在键盘层面拦截，100%可靠。
+ */
+function setupKeyboardInterceptor() {
+  keydownHandler = (e: KeyboardEvent) => {
+    // 只拦截 Delete 和 Backspace
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return
+
+    // 获取当前选区
+    const ls = (window as any).luckysheet
+    if (!ls) return
+
+    try {
+      const ranges = ls.getRange()
+      if (!ranges || !ranges.length) return
+
+      // 计算总行数
+      let totalRows = 0
+      for (const range of ranges) {
+        totalRows += (range.row[1] - range.row[0] + 1)
+      }
+
+      // 只拦截大选区（超过阈值）
+      if (totalRows <= validation.FAST_DELETE_THRESHOLD) return
+
+      // ===== 大选区：拦截并使用快速路径 =====
+      e.preventDefault()
+      e.stopPropagation()
+
+      console.log(`[KeyInterceptor] 拦截${e.key}键，选中${totalRows}行，使用快速删除路径`)
+
+      // 收集所有受影响的行
+      const affectedRows: number[] = []
+      for (const range of ranges) {
+        for (let r = range.row[0]; r <= range.row[1]; r++) {
+          affectedRows.push(r)
+        }
+      }
+
+      // 显示遮罩层
+      showValidationOverlay.value = true
+
+      // 使用分帧异步快速删除
+      validation.handleBulkDelete(affectedRows)
+
+      // 监听完成状态，自动隐藏遮罩
+      watchProcessingState()
+
+      return false
+    } catch (err) {
+      console.error('[KeyInterceptor] 处理失败:', err)
+      // 出错时不拦截，让 Luckysheet 正常处理
+    }
+  }
+
+  // 使用捕获阶段确保优先于 Luckysheet 处理
+  document.addEventListener('keydown', keydownHandler, true)
+  console.log('[KeyInterceptor] Delete/Backspace 键盘拦截器已安装')
+}
+
+/** 清理键盘拦截器 */
+function cleanupKeyboardInterceptor() {
+  if (keydownHandler) {
+    document.removeEventListener('keydown', keydownHandler, true)
+    keydownHandler = null
+    console.log('[KeyInterceptor] 键盘拦截器已卸载')
+  }
+}
+
+// ==================== 批量操作防御系统 (BatchDefender) ====================
+
 const showValidationOverlay = ref(false)
 const validationPercent = computed(() => {
   // 优先使用校验调度器进度
@@ -712,6 +794,9 @@ onMounted(async () => {
 
   // Shift+滚轮横向滚动：使用 document 捕获阶段监听
   setupShiftScroll()
+
+  // Delete/Backspace 键盘拦截：大选区快速删除
+  setupKeyboardInterceptor()
 })
 
 onBeforeUnmount(() => {
@@ -722,6 +807,8 @@ onBeforeUnmount(() => {
     document.removeEventListener('wheel', shiftScrollHandler)
     shiftScrollHandler = null
   }
+  // 清理键盘拦截器
+  cleanupKeyboardInterceptor()
   validation.cleanupTimers()
 })
 
