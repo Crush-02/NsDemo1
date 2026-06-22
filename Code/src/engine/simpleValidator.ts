@@ -251,6 +251,8 @@ function validateCustType(row: number, col: number): ValidationResult | null {
 
 /** 业主证件类型 - 非必填，有值则必须为"身份证"或"其他" */
 const OWNER_ID_TYPES = ['身份证', '其他']
+/** 业主类型枚举值 */
+const OWNER_TYPE_ENUM = ['业主', '共有产权人']
 
 function validateOwnerIdType(row: number): ValidationResult | null {
   const val = getCellText(row, 19)
@@ -263,6 +265,23 @@ function validateOwnerIdType(row: number): ValidationResult | null {
       message: '业主证件类型必须为"身份证"或"其他"',
       row,
       col: 19,
+    }
+  }
+  return null
+}
+
+/** 业主类型 - 非必填，有值则必须为"业主"或"共有产权人" */
+function validateOwnerType(row: number): ValidationResult | null {
+  const val = getCellText(row, 17)
+  if (val === '') return null
+  if (!OWNER_TYPE_ENUM.includes(val)) {
+    return {
+      isValid: false,
+      ruleId: '格式_业主类型',
+      severity: 'HIGH',
+      message: '业主类型必须为"业主"或"共有产权人"',
+      row,
+      col: 17,
     }
   }
   return null
@@ -368,6 +387,9 @@ export function validateCell(row: number, col: number): ValidationResult | null 
 
   // 客户类型格式
   if (CUST_TYPE_COLUMNS.includes(col)) return validateCustType(row, col)
+
+  // 业主类型格式
+  if (col === 17) return validateOwnerType(row)
 
   // 业主证件类型格式
   if (col === 19) return validateOwnerIdType(row)

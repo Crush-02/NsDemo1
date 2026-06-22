@@ -207,6 +207,22 @@ function validateTenantIdNoRequired(row: number): ValidationResult | null {
   }
 }
 
+/** 业主客户类型有值时，业主类型必填 */
+function validateOwnerTypeRequired(row: number): ValidationResult | null {
+  const custType = getCellText(row, 15)
+  if (custType === '') return null  // 业主客户类型未填，不触发
+  const ownerType = getCellText(row, 17)
+  if (ownerType !== '') return null  // 业主类型已填，不报错
+  return {
+    isValid: false,
+    ruleId: '业主类型_必填',
+    severity: 'HIGH',
+    message: '业主客户类型已填写时，业主类型必填（业主 或 共有产权人）',
+    row,
+    col: 17,
+  }
+}
+
 // ==================== 公开接口 ====================
 
 /**
@@ -253,6 +269,9 @@ export function validateConditionalRow(row: number): ValidationResult[] {
 
   const r_tenant_id_no = validateTenantIdNoRequired(row)
   if (r_tenant_id_no) results.push(r_tenant_id_no)
+
+  const r_owner_type = validateOwnerTypeRequired(row)
+  if (r_owner_type) results.push(r_owner_type)
 
   return results
 }
@@ -376,6 +395,24 @@ export function validateConditionalCell(row: number, col: number): ValidationRes
     const idType = getCellText(row, 29)
     if (idType !== '' && getCellText(row, 30) === '') {
       return { isValid: false, ruleId: '租户证件号码_必填', severity: 'HIGH', message: '租户证件类型已填写时，租户证件号码必填', row, col: 30 }
+    }
+    return null
+  }
+
+  // 业主客户类型(col=15) - 变化时需触发业主类型校验
+  if (col === 15) {
+    const custType = getCellText(row, 15)
+    if (custType !== '' && getCellText(row, 17) === '') {
+      return { isValid: false, ruleId: '业主类型_必填', severity: 'HIGH', message: '业主客户类型已填写时，业主类型必填（业主 或 共有产权人）', row, col: 17 }
+    }
+    return null
+  }
+
+  // 业主类型(col=17) - 变化时需触发业主证件号码校验
+  if (col === 17) {
+    const idType = getCellText(row, 19)
+    if (idType !== '' && getCellText(row, 20) === '') {
+      return { isValid: false, ruleId: '业主证件号码_必填', severity: 'HIGH', message: '业主证件类型已填写时，业主证件号码必填', row, col: 20 }
     }
     return null
   }
