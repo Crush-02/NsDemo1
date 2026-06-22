@@ -77,6 +77,14 @@ function setupKeyboardInterceptor() {
       if (totalRows <= validation.FAST_DELETE_THRESHOLD) return
 
       // ===== 大选区：拦截并使用快速路径 =====
+      // 【新增】双重检查：防止重复调用
+      if ((window as any).__isBulkDeleting) {
+        console.log('[KeyInterceptor] ⚠️ 批量删除正在进行中，忽略本次按键')
+        e.preventDefault()
+        e.stopPropagation()
+        return false
+      }
+
       e.preventDefault()
       e.stopPropagation()
 

@@ -25,6 +25,8 @@ declare global {
     __dirtyRowsForBulk: Set<number>
     /** 批量处理结束后是否需要最终刷新画布 */
     __needsGridRefresh: boolean
+    /** 【新增】全局防重入锁：防止 handleBulkDelete 被重复调用 */
+    __isBulkDeleting: boolean
   }
 }
 
@@ -33,6 +35,7 @@ if (typeof window !== 'undefined') {
   window.__isBulkProcessing = false
   window.__dirtyRowsForBulk = new Set()
   window.__needsGridRefresh = false
+  window.__isBulkDeleting = false  // 【新增】初始化防重入锁
 }
 
 // ==================== 配置常量 ====================
@@ -371,6 +374,15 @@ function executeBatchAsync(changedRows: number[], changedCols: number[]) {
  * @param colRange 可选的列范围 { startCol, endCol }，精确匹配用户选区
  */
 export async function handleBulkDelete(rows: number[], colRange?: { startCol: number; endCol: number }) {
+  // ===== 【新增】防重入检查 =====
+  if (window.__isBulkDeleting) {
+    console.warn('[handleBulkDelete] ⚠️ 检测到重复调用，已忽略（防重入锁生效）')
+    return  // 如果已经在执行中，直接返回
+  }
+
+  // 启用防重入锁
+  window.__isBulkDeleting = true
+
   // 1. 启用批量模式（Patch会检测此标志并跳过 jfrefreshgrid）
   window.__isBulkProcessing = true
   window.__dirtyRowsForBulk.clear()
@@ -473,6 +485,7 @@ export async function handleBulkDelete(rows: number[], colRange?: { startCol: nu
     window.__isBulkProcessing = false
   } finally {
     financeState.isProcessing = false
+    window.__isBulkDeleting = false  // 【新增】释放防重入锁
   }
 }
 
