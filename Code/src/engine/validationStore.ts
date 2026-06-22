@@ -361,29 +361,49 @@ function executeBatchAsync(changedRows: number[], changedCols: number[]) {
 /**
  * 快速删除路径：直接清除指定行的校验结果，跳过逐行校验
  * 用于大批量删除场景（>FAST_DELETE_THRESHOLD行），避免对空值做无意义的校验
+ *
+ * 【重要】此函数使用分帧异步处理，避免阻塞主线程
  * @param rows 要清除结果的行号数组
  */
 export function handleBulkDelete(rows: number[]) {
   // 标记正在处理中（用于触发遮罩）
   state.isProcessing = true
 
-  for (const row of rows) {
-    // 直接清除该行所有列的结果和待填写标记
-    for (let col = 0; col < 32; col++) {
-      const key = `${row}-${col}`
-      state.results.delete(key)
-      state.pendingCells.delete(key)
+  const totalRows = rows.length
+  let currentIndex = 0
+
+  function processNextChunk() {
+    if (currentIndex >= totalRows) {
+      // 所有行清除完毕 → 样式更新 + 释放锁
+      applyStylesViaFlowdata(new Set(rows))
+      markStatsDirty()
+      state.isProcessing = false
+      return
     }
+
+    // 取出当前帧要处理的行（每帧BATCH_ROWS_PER_FRAME行）
+    const endIndex = Math.min(currentIndex + BATCH_ROWS_PER_FRAME, totalRows)
+    const chunk = rows.slice(currentIndex, endIndex)
+    currentIndex = endIndex
+
+    // 执行当前帧的清除操作
+    for (const row of chunk) {
+      for (let col = 0; col < 32; col++) {
+        const key = `${row}-${col}`
+        state.results.delete(key)
+        state.pendingCells.delete(key)
+      }
+    }
+
+    // 更新进度
+    state.batchProgress = Math.round((currentIndex / totalRows) * 100)
+
+    // 安排下一帧
+    requestAnimationFrame(() => processNextChunk())
   }
 
-  // 增量样式更新（只处理被删除的行）
-  applyStylesViaFlowdata(new Set(rows))
-
-  // 更新统计
-  markStatsDirty()
-
-  // 释放锁
-  state.isProcessing = false
+  // 启动分帧处理
+  requestAnimationFrame(() => processNextChunk())
 }
 
 /**

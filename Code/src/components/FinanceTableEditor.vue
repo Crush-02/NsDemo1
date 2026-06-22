@@ -307,15 +307,13 @@ function initLuckysheet(extraCelldata?: CellData[]) {
             const operationType = detectOperationType(lastSelectionSnapshot)
 
             if (operationType === 'DELETE') {
-              // 快速删除路径：跳过校验直接清除结果
+              // 快速删除路径：跳过校验直接清除结果（分帧异步）
               const affectedRows = getAffectedRowsFromSnapshot(lastSelectionSnapshot)
               if (affectedRows.length > validation.FAST_DELETE_THRESHOLD) {
                 showValidationOverlay.value = true
-                try {
-                  validation.handleBulkDelete(affectedRows)
-                } finally {
-                  setTimeout(() => { showValidationOverlay.value = false }, 300)
-                }
+                validation.handleBulkDelete(affectedRows)
+                // 监听 isProcessing 变化来隐藏遮罩（异步完成）
+                watchProcessingState()
                 lastEditedCell = null
                 lastSelectionSnapshot = captureSelectionSnapshot()
                 setTimeout(() => showTooltipForCurrentCell(), 30)
