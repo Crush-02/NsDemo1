@@ -12,6 +12,26 @@ import { ValidationScheduler, schedulerProgress } from './validationScheduler'
 
 export { schedulerProgress }
 
+// ==================== 全局类型声明（用于Monkey-Patch） ====================
+
+declare global {
+  interface Window {
+    /** 是否处于批量处理模式（Patch使用：跳过jfrefreshgrid） */
+    __isBulkProcessing: boolean
+    /** 批量处理期间收集的脏行（用于最后的增量刷新） */
+    __dirtyRowsForBulk: Set<number>
+    /** 批量处理结束后是否需要最终刷新画布 */
+    __needsGridRefresh: boolean
+  }
+}
+
+// 初始化全局标志
+if (typeof window !== 'undefined') {
+  window.__isBulkProcessing = false
+  window.__dirtyRowsForBulk = new Set()
+  window.__needsGridRefresh = false
+}
+
 // ==================== 配置常量 ====================
 
 /** 批量操作的行数阈值：超过此值启用分帧异步处理 */
@@ -359,51 +379,87 @@ function executeBatchAsync(changedRows: number[], changedCols: number[]) {
 }
 
 /**
- * 快速删除路径：直接清除指定行的校验结果，跳过逐行校验
- * 用于大批量删除场景（>FAST_DELETE_THRESHOLD行），避免对空值做无意义的校验
+ * 快速删除路径：分帧异步清除数据 + 统一刷新
+ * 【Monkey-Patch方案】直接操作Luckysheet数据，跳过中间的慢速渲染
  *
- * 【重要】此函数使用分帧异步处理，避免阻塞主线程
- * @param rows 要清除结果的行号数组
+ * 核心改进：
+ * 1. 启用 __isBulkProcessing 全局标志 → Patch后的 jfrefreshgrid 会被跳过
+ * 2. 调用 Luckysheet.setcellvalue 清除实际数据（带 isRefresh: false）
+ * 3. 分帧处理避免阻塞主线程
+ * 4. 最后才关闭批量模式，统一刷新一次画布
+ *
+ * @param rows 要删除的行号数组
  */
-export function handleBulkDelete(rows: number[]) {
-  // 标记正在处理中（用于触发遮罩）
+export async function handleBulkDelete(rows: number[]) {
+  // 1. 启用批量模式（Patch会检测此标志并跳过 jfrefreshgrid）
+  window.__isBulkProcessing = true
+  window.__dirtyRowsForBulk.clear()
+  window.__needsGridRefresh = false
+
   state.isProcessing = true
 
   const totalRows = rows.length
-  let currentIndex = 0
+  let processedRows = 0
+  const COL_COUNT = 32 // 最大列数
 
-  function processNextChunk() {
-    if (currentIndex >= totalRows) {
-      // 所有行清除完毕 → 样式更新 + 释放锁
-      applyStylesViaFlowdata(new Set(rows))
-      markStatsDirty()
-      state.isProcessing = false
-      return
+  try {
+    // 2. 分帧清除数据（每帧处理 BATCH_ROWS_PER_FRAME 行）
+    while (processedRows < totalRows) {
+      const batch = rows.slice(processedRows, processedRows + BATCH_ROWS_PER_FRAME)
+      const ls = (window as any).luckysheet
+
+      for (const row of batch) {
+        // 2a. 通过 Luckysheet API 清除单元格数据（Patch后不会触发刷新）
+        if (ls && ls.setcellvalue) {
+          for (let col = 0; col < COL_COUNT; col++) {
+            ls.setcellvalue(row, col, null) // Patch版本：自动设置 isRefresh=false
+          }
+        }
+
+        // 2b. 清除我们的校验结果
+        for (let col = 0; col < COL_COUNT; col++) {
+          state.results.delete(`${row}-${col}`)
+          state.pendingCells.delete(`${row}-${col}`)
+        }
+
+        // 记录脏行（用于最后的增量样式更新）
+        window.__dirtyRowsForBulk.add(row)
+      }
+
+      processedRows += batch.length
+      // 更新进度（0-80%用于数据清除阶段）
+      state.batchProgress = Math.round((processedRows / totalRows) * 80)
+
+      // 让出主线程，避免阻塞UI
+      await new Promise(resolve => requestAnimationFrame(resolve))
     }
 
-    // 取出当前帧要处理的行（每帧BATCH_ROWS_PER_FRAME行）
-    const endIndex = Math.min(currentIndex + BATCH_ROWS_PER_FRAME, totalRows)
-    const chunk = rows.slice(currentIndex, endIndex)
-    currentIndex = endIndex
+    // 3. 应用样式（增量模式，只处理脏行）- 此时仍处于批量模式，不会触发刷新
+    applyStylesViaFlowdata(window.__dirtyRowsForBulk)
+    state.batchProgress = 90
 
-    // 执行当前帧的清除操作
-    for (const row of chunk) {
-      for (let col = 0; col < 32; col++) {
-        const key = `${row}-${col}`
-        state.results.delete(key)
-        state.pendingCells.delete(key)
+    // 4. 关闭批量模式，执行最终统一刷新！
+    console.log('[handleBulkDelete] 批量处理完成，执行最终画布刷新')
+    window.__isBulkProcessing = false
+
+    if (window.__needsGridRefresh || window.__dirtyRowsForBulk.size > 0) {
+      const ls = (window as any).luckysheet
+      if (ls && typeof ls.jfrefreshgrid === 'function') {
+        // 调用原始版本的 jfrefreshgrid（已关闭批量模式）
+        ls.jfrefreshgrid()
       }
     }
 
-    // 更新进度
-    state.batchProgress = Math.round((currentIndex / totalRows) * 100)
+    markStatsDirty()
+    state.batchProgress = 100
 
-    // 安排下一帧
-    requestAnimationFrame(() => processNextChunk())
+  } catch (err) {
+    console.error('[handleBulkDelete] 处理失败:', err)
+    // 确保即使出错也恢复状态，避免永久卡在批量模式
+    window.__isBulkProcessing = false
+  } finally {
+    state.isProcessing = false
   }
-
-  // 启动分帧处理
-  requestAnimationFrame(() => processNextChunk())
 }
 
 /**
