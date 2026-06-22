@@ -380,13 +380,13 @@ function executeBatchAsync(changedRows: number[], changedCols: number[]) {
 
 /**
  * 快速删除路径：分帧异步清除数据 + 统一刷新
- * 【底层操作方案】直接操作 flowdata 数组，绕过 Luckysheet API 副作用
+ * 【双重数据结构同步方案】同时维护 flowdata 和 celldata，确保一致性
  *
  * 核心改进：
  * 1. 启用 __isBulkProcessing 全局标志 → Patch后的 jfrefreshgrid 会被跳过
- * 2. 直接修改 flowdata[r][c] = null （不调用 setcellvalue API）
- *    - 避免触发操作队列/撤销栈/celldata同步等副作用
- *    - 完全精确控制删除范围（只删指定列）
+ * 2. 同时修改两套数据结构：
+ *    - flowdata[r][c] = null（二维数组，用于计算）
+ *    - 从 celldata[] 移除对应条目（对象数组，用于渲染）
  * 3. 分帧处理避免阻塞主线程
  * 4. 最后关闭批量模式，统一刷新一次画布
  *
@@ -411,23 +411,28 @@ export async function handleBulkDelete(rows: number[], colRange?: { startCol: nu
   try {
     // 获取 Luckysheet 底层数据引用
     const ls = (window as any).luckysheet
-    const sheet = ls?.getSheet?.()
+    const sheetIndex = ls?.getCurrentSheetIndex?.()
+    const sheet = ls?.getSheetByIndex?.(sheetIndex) || ls?.getSheet?.()
     const flowdata = sheet?.data || []
+    const celldata = sheet?.celldata || []
 
     console.log(`[handleBulkDelete] 开始处理 ${totalRows} 行 × 列${startCol}-${endCol}`)
-    console.log(`[handleBulkDelete] 使用底层 flowdata 直接操作模式`)
+    console.log(`[handleBulkDelete] 使用双重数据同步模式 (flowdata + celldata)`)
+
+    // 预先构建要删除的单元格坐标集合（用于快速查找celldata中的条目）
+    const cellsToDelete = new Set<string>()
+    for (const row of rows) {
+      for (let col = startCol; col <= endCol; col++) {
+        cellsToDelete.add(`${row}-${col}`)
+      }
+    }
 
     // 2. 分帧清除数据（每帧处理 BATCH_ROWS_PER_FRAME 行）
     while (processedRows < totalRows) {
       const batch = rows.slice(processedRows, processedRows + BATCH_ROWS_PER_FRAME)
 
       for (const row of batch) {
-        // 2a. 【关键】直接操作 flowdata，不调用 setcellvalue API
-        // 这样可以避免：
-        // - 触发 Luckysheet 的操作队列（undo/redo stack）
-        // - 触发 celldata 同步更新
-        // - 触发 cellUpdated 等内部钩子
-        // - 导致后续点击时的双重删除问题
+        // 2a. 直接操作 flowdata（二维数组）
         if (flowdata[row]) {
           for (let col = startCol; col <= endCol; col++) {
             flowdata[row][col] = null  // 直接置空
@@ -450,6 +455,24 @@ export async function handleBulkDelete(rows: number[], colRange?: { startCol: nu
 
       // 让出主线程，避免阻塞UI
       await new Promise(resolve => requestAnimationFrame(resolve))
+    }
+
+    // 3. 【关键】同步清理 celldata（在所有 flowdata 修改完成后统一处理）
+    // 这样可以避免频繁操作数组导致的性能问题
+    if (Array.isArray(celldata) && cellsToDelete.size > 0) {
+      console.log(`[handleBulkDelete] 同步清理 celldata，共 ${cellsToDelete.size} 个单元格`)
+
+      // 使用倒序遍历，安全删除数组元素
+      for (let i = celldata.length - 1; i >= 0; i--) {
+        const cell = celldata[i]
+        if (cell && typeof cell === 'object' && 'r' in cell && 'c' in cell) {
+          const key = `${cell.r}-${cell.c}`
+          if (cellsToDelete.has(key)) {
+            // 从 celldata 中移除此条目
+            celldata.splice(i, 1)
+          }
+        }
+      }
     }
 
     // 3. 应用样式（增量模式，只处理脏行）- 此时仍处于批量模式，不会触发刷新
