@@ -356,8 +356,10 @@ function flushBatchOperation() {
   }
 
   if (isActive && operationType === 'DELETE' && rowsArr.length > validation.FAST_DELETE_THRESHOLD) {
-    // 大批量删除：走快速删除路径（分帧异步）
-    validation.handleBulkDelete(rowsArr)
+    // 大批量删除：走快速删除路径（分帧异步），传递列范围防止全删
+    const minCol = Math.min(...colsArr)
+    const maxCol = Math.max(...colsArr)
+    validation.handleBulkDelete(rowsArr, { startCol: minCol, endCol: maxCol })
     watchProcessingState()
   } else if (isActive && rowsArr.length > validation.BATCH_THRESHOLD) {
     // 大批量编辑：走分帧处理路径
@@ -453,6 +455,17 @@ function getAffectedRowsFromSnapshot(snapshot: Map<string, string>): number[] {
     if (row > 0) rows.add(row) // 跳过表头
   }
   return Array.from(rows)
+}
+
+/** 从快照获取影响的列范围（最小列和最大列） */
+function getAffectedColsFromSnapshot(snapshot: Map<string, string>): { min: number; max: number } {
+  let min = Infinity, max = -Infinity
+  for (const key of snapshot.keys()) {
+    const col = Number(key.split('-')[1])
+    if (col < min) min = col
+    if (col > max) max = col
+  }
+  return { min: min === Infinity ? 0 : min, max: max === -Infinity ? 31 : max }
 }
 
 /** 监听批量处理状态，完成后自动隐藏遮罩 */
@@ -588,9 +601,11 @@ function initLuckysheet(extraCelldata?: CellData[]) {
             if (operationType === 'DELETE') {
               // 快速删除路径：跳过校验直接清除结果（分帧异步）
               const affectedRows = getAffectedRowsFromSnapshot(lastSelectionSnapshot)
+              // 从快照中推算列范围（防止全删）
+              const affectedCols = getAffectedColsFromSnapshot(lastSelectionSnapshot)
               if (affectedRows.length > validation.FAST_DELETE_THRESHOLD) {
                 showValidationOverlay.value = true
-                validation.handleBulkDelete(affectedRows)
+                validation.handleBulkDelete(affectedRows, { startCol: affectedCols.min, endCol: affectedCols.max })
                 // 监听 isProcessing 变化来隐藏遮罩（异步完成）
                 watchProcessingState()
                 lastEditedCell = null
