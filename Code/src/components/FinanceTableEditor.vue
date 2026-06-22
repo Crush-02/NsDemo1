@@ -46,14 +46,22 @@ const validation = useFinanceValidationStore()
 /** 校验遮罩层状态 */
 const showValidationOverlay = ref(false)
 const validationPercent = computed(() => {
+  // 优先使用校验调度器进度
   const p = validation.state.validationProgress
-  if (!p.total) return 0
-  if (p.phase === 'crossRow') return 95
-  if (p.phase === 'done') return 100
-  return Math.min(Math.round((p.current / p.total) * 95), 94)
+  if (p.total > 0) {
+    if (p.phase === 'crossRow') return 95
+    if (p.phase === 'done') return 100
+    return Math.min(Math.round((p.current / p.total) * 95), 94)
+  }
+  // 使用批量操作进度
+  if (validation.state.isProcessing) {
+    return validation.state.batchProgress || 0
+  }
+  return 0
 })
 const validationPhaseText = computed(() => {
   const p = validation.state.validationProgress
+  if (validation.state.isProcessing && !p.isRunning) return '数据处理中...'
   if (p.phase === 'row') return '行校验中...'
   if (p.phase === 'crossRow') return '跨行校验中...'
   if (p.phase === 'done') return '校验完成'
@@ -92,6 +100,67 @@ function captureSelectionSnapshot(): Map<string, string> {
     }
   } catch {}
   return snapshot
+}
+
+/**
+ * 检测大选区操作类型
+ * 通过采样检测是否大部分单元格变为空值（删除）或有变化（编辑）
+ * @returns 'DELETE' | 'BATCH_EDIT' | 'NORMAL'
+ */
+function detectOperationType(snapshot: Map<string, string>): string {
+  // 采样10%或至少50个单元格
+  const sampleSize = Math.min(Math.floor(snapshot.size * 0.1), 500)
+  const keys = Array.from(snapshot.keys())
+  const sampleKeys = keys.sort(() => Math.random() - 0.5).slice(0, sampleSize)
+
+  let emptyCount = 0
+  let changedCount = 0
+
+  for (const key of sampleKeys) {
+    const [row, col] = key.split('-').map(Number)
+    const newVal = getCellValue(row, col)
+    const oldVal = snapshot.get(key) || ''
+
+    if (newVal === '' && oldVal !== '') {
+      emptyCount++
+    }
+    if (newVal !== oldVal) {
+      changedCount++
+    }
+  }
+
+  // 超过80%为空值 → 判定为删除操作
+  if (emptyCount / sampleSize > 0.8) return 'DELETE'
+  // 超过50%有变化 → 判定为批量编辑
+  if (changedCount / sampleSize > 0.5) return 'BATCH_EDIT'
+  return 'NORMAL'
+}
+
+/** 从快照获取影响的所有行 */
+function getAffectedRowsFromSnapshot(snapshot: Map<string, string>): number[] {
+  const rows = new Set<number>()
+  for (const key of snapshot.keys()) {
+    const row = Number(key.split('-')[0])
+    if (row >= FINANCE_HEADER_ROW_COUNT) rows.add(row) // 跳过表头
+  }
+  return Array.from(rows)
+}
+
+/** 监听批量处理状态，完成后自动隐藏遮罩 */
+let processingWatchTimer: ReturnType<typeof setTimeout> | null = null
+function watchProcessingState() {
+  if (processingWatchTimer) clearTimeout(processingWatchTimer)
+
+  const check = () => {
+    if (!validation.state.isProcessing) {
+      showValidationOverlay.value = false
+      processingWatchTimer = null
+      return
+    }
+    processingWatchTimer = setTimeout(check, 100)
+  }
+
+  check()
 }
 
 /** 区域颜色配置：基本信息(蓝) / 应收(橙) / 已收(绿) */
@@ -233,6 +302,56 @@ function initLuckysheet(extraCelldata?: CellData[]) {
       cellMousedown() {
         // 检测上次选中区域中所有单元格值是否变化
         if (lastSelectionSnapshot.size > 0) {
+          // ===== 新增：大选区智能路径检测 =====
+          if (lastSelectionSnapshot.size > validation.SNAPSHOT_THRESHOLD) {
+            const operationType = detectOperationType(lastSelectionSnapshot)
+
+            if (operationType === 'DELETE') {
+              // 快速删除路径：跳过校验直接清除结果
+              const affectedRows = getAffectedRowsFromSnapshot(lastSelectionSnapshot)
+              if (affectedRows.length > validation.FAST_DELETE_THRESHOLD) {
+                showValidationOverlay.value = true
+                try {
+                  validation.handleBulkDelete(affectedRows)
+                } finally {
+                  setTimeout(() => { showValidationOverlay.value = false }, 300)
+                }
+                lastEditedCell = null
+                lastSelectionSnapshot = captureSelectionSnapshot()
+                setTimeout(() => showTooltipForCurrentCell(), 30)
+                return // 提前返回，不走后面的详细比较
+              }
+            }
+
+            if (operationType === 'BATCH_EDIT' && lastSelectionSnapshot.size > validation.FAST_DELETE_THRESHOLD) {
+              // 大批量编辑路径：分帧处理 + 遮罩保护
+              const changedRows = new Set<number>()
+              const changedCols = new Set<number>()
+              for (const [key, oldVal] of lastSelectionSnapshot.entries()) {
+                const [rs, cs] = key.split('-')
+                const row = Number(rs), col = Number(cs)
+                const newVal = getCellValue(row, col)
+                if (oldVal !== newVal) {
+                  validation.onCellInput(row, col, true) // 批量模式清除结果
+                  changedRows.add(row)
+                  changedCols.add(col)
+                }
+              }
+              if (changedRows.size > 0) {
+                showValidationOverlay.value = true
+                // onBatchInputComplete 内部会自动设置 isProcessing 并更新 batchProgress
+                validation.onBatchInputComplete(Array.from(changedRows), Array.from(changedCols))
+                // 监听 isProcessing 变化来隐藏遮罩
+                watchProcessingState()
+              }
+              lastEditedCell = null
+              lastSelectionSnapshot = captureSelectionSnapshot()
+              setTimeout(() => showTooltipForCurrentCell(), 30)
+              return // 提前返回
+            }
+          }
+
+          // ===== 原有逻辑：小选区详细比较 =====
           const changedRows = new Set<number>()
           const changedCols = new Set<number>()
           const isBatch = lastSelectionSnapshot.size > 1
@@ -251,7 +370,7 @@ function initLuckysheet(extraCelldata?: CellData[]) {
             }
           }
           if (isBatch) {
-            // 批量模式：整行校验 + flowdata直接刷新
+            // 批量模式：整行校验 + flowdata直接刷新（小数据量同步执行）
             validation.onBatchInputComplete(Array.from(changedRows), Array.from(changedCols))
           } else {
             for (const row of changedRows) {

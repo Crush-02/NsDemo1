@@ -15,6 +15,20 @@ import { getAffectedTargetCols, isPendingRequired, getPendingCols } from './depe
 import { FINANCE_COL_COUNT, FINANCE_HEADER_ROW_COUNT } from './types'
 import { ValidationScheduler, createSchedulerProgress } from '../validationScheduler'
 
+// ==================== 配置常量 ====================
+
+/** 批量操作的行数阈值：超过此值启用分帧异步处理 */
+export const BATCH_THRESHOLD = 50
+
+/** 分帧处理时每帧处理的行数 */
+export const BATCH_ROWS_PER_FRAME = 50
+
+/** 快照大小阈值：超过此值使用轻量检测模式 */
+export const SNAPSHOT_THRESHOLD = 500
+
+/** 快速删除路径阈值：超过此值跳过校验直接清除 */
+export const FAST_DELETE_THRESHOLD = 100
+
 // ==================== 状态 ====================
 
 /** 应收已收模块独立的校验进度状态 */
@@ -29,6 +43,10 @@ export const financeState = reactive({
   pendingCells: new Set<string>(),
   /** 校验进度 */
   validationProgress: financeSchedulerProgress,
+  /** 是否正在执行批量操作（用于触发遮罩） */
+  isProcessing: false,
+  /** 批量操作进度百分比（0-100） */
+  batchProgress: 0,
 })
 
 function cellKey(row: number, col: number): string {
@@ -244,11 +262,24 @@ export function onCellInput(row: number, col: number, batch = false) {
 
 /** 批量输入后的整行校验（由 cellMousedown 调用） */
 export function onBatchInputComplete(changedRows: number[], changedCols: number[]) {
+  // 小数据量（≤50行）：保持原有同步逻辑，即时响应
+  if (changedRows.length <= BATCH_THRESHOLD) {
+    executeBatchSync(changedRows, changedCols)
+    return
+  }
+
+  // 大数据量：分帧异步处理，避免阻塞主线程
+  executeBatchAsync(changedRows, changedCols)
+}
+
+/** 同步批量处理（小数据量，保持即时响应） */
+function executeBatchSync(changedRows: number[], changedCols: number[]) {
   for (const row of changedRows) {
     executeBlurValidation(row, -1)
   }
-  // 直接修改flowdata批量应用样式
-  applyStylesViaFlowdata()
+  // 增量样式更新（只传变化的行）
+  const dirtyRows = new Set(changedRows)
+  applyStylesViaFlowdata(dirtyRows)
   // 触发跨行校验
   for (const col of changedCols) {
     if (CROSS_ROW_COL_MAP[col]) {
@@ -257,8 +288,87 @@ export function onBatchInputComplete(changedRows: number[], changedCols: number[
   }
 }
 
-/** 通过直接修改flowdata批量应用样式 */
-function applyStylesViaFlowdata() {
+/** 异步分帧批量处理（大数据量，防止卡死） */
+function executeBatchAsync(changedRows: number[], changedCols: number[]) {
+  // 标记正在处理中（用于触发遮罩）
+  financeState.isProcessing = true
+
+  const totalRows = changedRows.length
+  let currentIndex = 0
+
+  // 收集所有需要处理的行作为脏行集合
+  const allDirtyRows = new Set(changedRows)
+
+  function processNextChunk() {
+    if (currentIndex >= totalRows) {
+      // 所有行处理完毕 → 最终样式刷新 + 释放锁
+      financeState.isProcessing = false
+      applyStylesViaFlowdata(allDirtyRows)
+
+      // 触发跨行校验
+      for (const col of changedCols) {
+        if (CROSS_ROW_COL_MAP[col]) {
+          scheduleCrossRowValidation(col)
+        }
+      }
+      return
+    }
+
+    // 取出当前帧要处理的行（每帧BATCH_ROWS_PER_FRAME行）
+    const endIndex = Math.min(currentIndex + BATCH_ROWS_PER_FRAME, totalRows)
+    const chunk = changedRows.slice(currentIndex, endIndex)
+    currentIndex = endIndex
+
+    // 执行当前帧的校验
+    for (const row of chunk) {
+      executeBlurValidation(row, -1)
+    }
+
+    // 更新进度（用于遮罩进度条显示）
+    financeState.batchProgress = Math.round((currentIndex / totalRows) * 100)
+
+    // 安排下一帧
+    requestAnimationFrame(() => processNextChunk())
+  }
+
+  // 启动分帧处理
+  requestAnimationFrame(() => processNextChunk())
+}
+
+/**
+ * 快速删除路径：直接清除指定行的校验结果，跳过逐行校验
+ * 用于大批量删除场景（>FAST_DELETE_THRESHOLD行），避免对空值做无意义的校验
+ * @param rows 要清除结果的行号数组
+ */
+export function handleBulkDelete(rows: number[]) {
+  // 标记正在处理中（用于触发遮罩）
+  financeState.isProcessing = true
+
+  for (const row of rows) {
+    // 直接清除该行所有列的结果和待填写标记
+    for (let col = 0; col < FINANCE_COL_COUNT; col++) {
+      const key = `${row}-${col}`
+      financeState.results.delete(key)
+      financeState.pendingCells.delete(key)
+    }
+  }
+
+  // 增量样式更新（只处理被删除的行）
+  applyStylesViaFlowdata(new Set(rows))
+
+  // 更新统计
+  markStatsDirty()
+
+  // 释放锁
+  financeState.isProcessing = false
+}
+
+/**
+ * 通过直接修改flowdata批量应用样式
+ * @param dirtyRows 可选的脏行集合。提供时只处理这些行的样式（增量模式）；
+ *                   不提供或为空时全量遍历所有results（向后兼容）
+ */
+function applyStylesViaFlowdata(dirtyRows?: Set<number>) {
   const ls = (window as any).luckysheet
   if (!ls) return
 
@@ -271,20 +381,51 @@ function applyStylesViaFlowdata() {
   }
 
   const styleMap = new Map<string, { bd: any; bg?: string }>()
-  financeState.results.forEach((results, key) => {
-    if (!results.length) return
-    const worst = results.reduce((a, b) => {
-      const o: Record<Severity, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 }
-      return o[a.severity] <= o[b.severity] ? a : b
+
+  if (dirtyRows && dirtyRows.size > 0) {
+    // ===== 增量模式：只遍历脏行相关的单元格 =====
+    for (const row of dirtyRows) {
+      for (let col = 0; col < FINANCE_COL_COUNT; col++) {
+        const key = `${row}-${col}`
+
+        // 检查是否有错误结果
+        const results = financeState.results.get(key)
+        if (results && results.length > 0) {
+          const worst = getWorstResultFromList(results)
+          styleMap.set(key, worst.severity === 'CRITICAL'
+            ? { bd: { borderType: 'border-all', style: '2', color: '#F56C6C' }, bg: '#FEF0F0' }
+            : { bd: { borderType: 'border-all', style: '2', color: '#E6A23C' } }
+          )
+          continue
+        }
+
+        // 检查是否为待填写
+        if (financeState.pendingCells.has(key)) {
+          styleMap.set(key, { bd: { borderType: 'border-all', style: '3', color: '#E6A23C' }, bg: '#FDF6EC' })
+          continue
+        }
+
+        // 无错误且非待填写：标记清除样式
+        if (flowdata[row]?.[col]) {
+          styleMap.set(key, { bd: null }) // null 表示恢复默认
+        }
+      }
+    }
+  } else {
+    // ===== 全量模式：遍历所有results和pendingCells（向后兼容） =====
+    financeState.results.forEach((results, key) => {
+      if (!results.length) return
+      const worst = getWorstResultFromList(results)
+      styleMap.set(key, worst.severity === 'CRITICAL'
+        ? { bd: { borderType: 'border-all', style: '2', color: '#F56C6C' }, bg: '#FEF0F0' }
+        : { bd: { borderType: 'border-all', style: '2', color: '#E6A23C' } }
+      )
     })
-    styleMap.set(key, worst.severity === 'CRITICAL'
-      ? { bd: { borderType: 'border-all', style: '2', color: '#F56C6C' }, bg: '#FEF0F0' }
-      : { bd: { borderType: 'border-all', style: '2', color: '#E6A23C' } })
-  })
-  financeState.pendingCells.forEach((key) => {
-    if (styleMap.has(key)) return
-    styleMap.set(key, { bd: { borderType: 'border-all', style: '3', color: '#E6A23C' }, bg: '#FDF6EC' })
-  })
+    financeState.pendingCells.forEach((key) => {
+      if (styleMap.has(key)) return
+      styleMap.set(key, { bd: { borderType: 'border-all', style: '3', color: '#E6A23C' }, bg: '#FDF6EC' })
+    })
+  }
 
   for (const [key, style] of styleMap.entries()) {
     const [rs, cs] = key.split('-')
@@ -299,15 +440,28 @@ function applyStylesViaFlowdata() {
       cell.v = ' '
       cell.m = ' '
     }
-    cell.bd = style.bd
-    if (style.bg) cell.bg = style.bg
-    else delete cell.bg
+
+    if (style.bd === null) {
+      // 增量模式：清除错误样式，恢复默认
+      delete cell.bd
+      delete cell.bg
+    } else {
+      cell.bd = style.bd
+      if (style.bg) cell.bg = style.bg
+      else delete cell.bg
+    }
   }
 
   try {
     if (ls.jfrefreshgrid) ls.jfrefreshgrid()
     else if (ls.refresh) ls.refresh()
   } catch { /* 忽略 */ }
+}
+
+/** 从结果列表中获取最严重的错误 */
+function getWorstResultFromList(results: ValidationResult[]): ValidationResult {
+  const o: Record<Severity, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 }
+  return results.reduce((a, b) => o[a.severity] <= o[b.severity] ? a : b)
 }
 
 export function onCellBlur(row: number, col: number) {
@@ -684,5 +838,7 @@ export function useFinanceValidationStore() {
     getCellErrors, getAllCellErrors, applyAllValidationStyles, applyAllStylesFromResults,
     flushStyles: flushStyleBatchSync,
     cleanupTimers,
+    // 新增：配置常量和快速删除方法
+    SNAPSHOT_THRESHOLD, FAST_DELETE_THRESHOLD, handleBulkDelete,
   }
 }

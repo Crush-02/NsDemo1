@@ -13,6 +13,7 @@
     "element-plus": "^2.7.0",
     "exceljs": "^4.4.0",
     "file-saver": "^2.0.5",
+    "luckysheet": "^2.1.13",
     "vue": "^3.4.0",
     "xlsx": "^0.18.5"
   },
