@@ -64,6 +64,18 @@ const DEPENDENCY_RULES: DependencyRule[] = [
     targetCols: [19],       // 业主证件类型
     description: '业主证件号码已填写，业主证件类型必填',
   },
+  // 业主证件类型有值 → 业主证件号码必填
+  {
+    sourceCols: [19],       // 业主证件类型
+    targetCols: [20],       // 业主证件号码
+    description: '业主证件类型已填写，业主证件号码必填',
+  },
+  // 租户证件类型有值 → 租户证件号码必填
+  {
+    sourceCols: [29],       // 租户证件类型
+    targetCols: [30],       // 租户证件号码
+    description: '租户证件类型已填写，租户证件号码必填',
+  },
 ]
 
 /** 源列 → 依赖规则的反向索引 */

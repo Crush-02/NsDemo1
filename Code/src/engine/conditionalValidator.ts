@@ -175,6 +175,38 @@ function validateOwnerContact(row: number): ValidationResult | null {
   }
 }
 
+/** 规则: 业主证件号码_必填（触发：业主证件类型有值） */
+function validateOwnerIdNoRequired(row: number): ValidationResult | null {
+  const idType = getCellText(row, 19)
+  if (idType === '') return null  // 证件类型未填，不触发
+  const idNo = getCellText(row, 20)
+  if (idNo !== '') return null    // 证件号码已填，不报错
+  return {
+    isValid: false,
+    ruleId: '业主证件号码_必填',
+    severity: 'HIGH',
+    message: '业主证件类型已填写时，业主证件号码必填',
+    row,
+    col: 20,
+  }
+}
+
+/** 规则: 租户证件号码_必填（触发：租户证件类型有值） */
+function validateTenantIdNoRequired(row: number): ValidationResult | null {
+  const idType = getCellText(row, 29)
+  if (idType === '') return null  // 证件类型未填，不触发
+  const idNo = getCellText(row, 30)
+  if (idNo !== '') return null    // 证件号码已填，不报错
+  return {
+    isValid: false,
+    ruleId: '租户证件号码_必填',
+    severity: 'HIGH',
+    message: '租户证件类型已填写时，租户证件号码必填',
+    row,
+    col: 30,
+  }
+}
+
 // ==================== 公开接口 ====================
 
 /**
@@ -215,6 +247,12 @@ export function validateConditionalRow(row: number): ValidationResult[] {
 
   const r17 = validateOwnerContact(row)
   if (r17) results.push(r17)
+
+  const r_owner_id_no = validateOwnerIdNoRequired(row)
+  if (r_owner_id_no) results.push(r_owner_id_no)
+
+  const r_tenant_id_no = validateTenantIdNoRequired(row)
+  if (r_tenant_id_no) results.push(r_tenant_id_no)
 
   return results
 }
@@ -302,6 +340,42 @@ export function validateConditionalCell(row: number, col: number): ValidationRes
   if (col === 28) {
     if (getCellText(row, 25) === '企业' && getCellText(row, 28) === '') {
       return { isValid: false, ruleId: '租户企业联系人_必填', severity: 'MEDIUM', message: '租户客户类型为企业时，租户企业联系人必填', row, col: 28 }
+    }
+    return null
+  }
+
+  // 业主证件号码(col=20)
+  if (col === 20) {
+    const idType = getCellText(row, 19)
+    if (idType !== '' && getCellText(row, 20) === '') {
+      return { isValid: false, ruleId: '业主证件号码_必填', severity: 'HIGH', message: '业主证件类型已填写时，业主证件号码必填', row, col: 20 }
+    }
+    return null
+  }
+
+  // 业主证件类型(col=19) - 变化时需触发证件号码校验
+  if (col === 19) {
+    const idType = getCellText(row, 19)
+    if (idType !== '' && getCellText(row, 20) === '') {
+      return { isValid: false, ruleId: '业主证件号码_必填', severity: 'HIGH', message: '业主证件类型已填写时，业主证件号码必填', row, col: 20 }
+    }
+    return null
+  }
+
+  // 租户证件号码(col=30)
+  if (col === 30) {
+    const idType = getCellText(row, 29)
+    if (idType !== '' && getCellText(row, 30) === '') {
+      return { isValid: false, ruleId: '租户证件号码_必填', severity: 'HIGH', message: '租户证件类型已填写时，租户证件号码必填', row, col: 30 }
+    }
+    return null
+  }
+
+  // 租户证件类型(col=29) - 变化时需触发证件号码校验
+  if (col === 29) {
+    const idType = getCellText(row, 29)
+    if (idType !== '' && getCellText(row, 30) === '') {
+      return { isValid: false, ruleId: '租户证件号码_必填', severity: 'HIGH', message: '租户证件类型已填写时，租户证件号码必填', row, col: 30 }
     }
     return null
   }
