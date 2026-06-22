@@ -82,19 +82,28 @@ function setupKeyboardInterceptor() {
 
       console.log(`[KeyInterceptor] 拦截${e.key}键，选中${totalRows}行，使用快速删除路径`)
 
-      // 收集所有受影响的行
+      // 收集所有受影响的行和列（精确匹配用户选区）
       const affectedRows: number[] = []
+      let minCol = Infinity
+      let maxCol = -Infinity
+
       for (const range of ranges) {
+        // 收集行
         for (let r = range.row[0]; r <= range.row[1]; r++) {
           affectedRows.push(r)
         }
+        // 收集列范围
+        minCol = Math.min(minCol, range.column[0])
+        maxCol = Math.max(maxCol, range.column[1])
       }
+
+      console.log(`[KeyInterceptor] 拦截${e.key}键，选中${affectedRows.length}行×列${minCol}-${maxCol}`)
 
       // 显示遮罩层
       showValidationOverlay.value = true
 
-      // 使用分帧异步快速删除
-      validation.handleBulkDelete(affectedRows)
+      // 使用分帧异步快速删除（传递精确的行列范围）
+      validation.handleBulkDelete(affectedRows, { startCol: minCol, endCol: maxCol })
 
       // 监听完成状态，自动隐藏遮罩
       watchProcessingState()

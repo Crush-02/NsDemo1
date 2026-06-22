@@ -389,8 +389,9 @@ function executeBatchAsync(changedRows: number[], changedCols: number[]) {
  * 4. 最后才关闭批量模式，统一刷新一次画布
  *
  * @param rows 要删除的行号数组
+ * @param colRange 可选的列范围 { startCol, endCol }，精确匹配用户选区
  */
-export async function handleBulkDelete(rows: number[]) {
+export async function handleBulkDelete(rows: number[], colRange?: { startCol: number; endCol: number }) {
   // 1. 启用批量模式（Patch会检测此标志并跳过 jfrefreshgrid）
   window.__isBulkProcessing = true
   window.__dirtyRowsForBulk.clear()
@@ -400,7 +401,11 @@ export async function handleBulkDelete(rows: number[]) {
 
   const totalRows = rows.length
   let processedRows = 0
-  const COL_COUNT = 32 // 最大列数
+
+  // 确定要处理的列范围
+  const startCol = colRange?.startCol ?? 0
+  const endCol = colRange?.endCol ?? 31
+  const COL_COUNT = endCol - startCol + 1
 
   try {
     // 2. 分帧清除数据（每帧处理 BATCH_ROWS_PER_FRAME 行）
@@ -409,15 +414,15 @@ export async function handleBulkDelete(rows: number[]) {
       const ls = (window as any).luckysheet
 
       for (const row of batch) {
-        // 2a. 通过 Luckysheet API 清除单元格数据（Patch后不会触发刷新）
+        // 2a. 通过 Luckysheet API 清除单元格数据（只清除用户选中的列！）
         if (ls && ls.setcellvalue) {
-          for (let col = 0; col < COL_COUNT; col++) {
+          for (let col = startCol; col <= endCol; col++) {
             ls.setcellvalue(row, col, null) // Patch版本：自动设置 isRefresh=false
           }
         }
 
-        // 2b. 清除我们的校验结果
-        for (let col = 0; col < COL_COUNT; col++) {
+        // 2b. 清除我们的校验结果（只清除对应列）
+        for (let col = startCol; col <= endCol; col++) {
           state.results.delete(`${row}-${col}`)
           state.pendingCells.delete(`${row}-${col}`)
         }
