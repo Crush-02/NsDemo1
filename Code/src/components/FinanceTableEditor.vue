@@ -569,6 +569,12 @@ function initLuckysheet(extraCelldata?: CellData[]) {
             // 【关键修复】如果刚完成批量删除（3秒内），跳过检测，防止二次触发
             if (Date.now() - (window as any).__lastBulkDeleteTime < 3000) {
               console.log('[cellMousedown] ⏭️ 跳过删除检测（刚完成批量删除）')
+              // 注意：仍需触发 ON_BLUR，不能跳过
+              if (lastEditedCell) {
+                const { row, col } = lastEditedCell
+                lastEditedCell = null
+                validation.onCellBlur(row, col)
+              }
               lastSelectionSnapshot = captureSelectionSnapshot()
               setTimeout(() => showTooltipForCurrentCell(), 30)
               return
