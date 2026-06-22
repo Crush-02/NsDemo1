@@ -357,13 +357,15 @@ function executeBatchAsync(changedRows: number[], changedCols: number[]) {
 
 /**
  * 快速删除路径：分帧异步清除数据 + 统一刷新
- * 【Monkey-Patch方案】直接操作Luckysheet数据，跳过中间的慢速渲染
+ * 【底层操作方案】直接操作 flowdata 数组，绕过 Luckysheet API 副作用
  *
  * 核心改进：
  * 1. 启用 __isBulkProcessing 全局标志 → Patch后的 jfrefreshgrid 会被跳过
- * 2. 调用 Luckysheet.setcellvalue 清除实际数据（带 isRefresh: false）
+ * 2. 直接修改 flowdata[r][c] = null （不调用 setcellvalue API）
+ *    - 避免触发操作队列/撤销栈/celldata同步等副作用
+ *    - 完全精确控制删除范围（只删指定列）
  * 3. 分帧处理避免阻塞主线程
- * 4. 最后才关闭批量模式，统一刷新一次画布
+ * 4. 最后关闭批量模式，统一刷新一次画布
  *
  * @param rows 要删除的行号数组
  * @param colRange 可选的列范围 { startCol, endCol }，精确匹配用户选区
@@ -384,16 +386,28 @@ export async function handleBulkDelete(rows: number[], colRange?: { startCol: nu
   const endCol = colRange?.endCol ?? (FINANCE_COL_COUNT - 1)
 
   try {
+    // 获取 Luckysheet 底层数据引用
+    const ls = (window as any).luckysheet
+    const sheet = ls?.getSheet?.()
+    const flowdata = sheet?.data || []
+
+    console.log(`[handleBulkDelete] 开始处理 ${totalRows} 行 × 列${startCol}-${endCol}`)
+    console.log(`[handleBulkDelete] 使用底层 flowdata 直接操作模式`)
+
     // 2. 分帧清除数据（每帧处理 BATCH_ROWS_PER_FRAME 行）
     while (processedRows < totalRows) {
       const batch = rows.slice(processedRows, processedRows + BATCH_ROWS_PER_FRAME)
-      const ls = (window as any).luckysheet
 
       for (const row of batch) {
-        // 2a. 通过 Luckysheet API 清除单元格数据（只清除用户选中的列！）
-        if (ls && ls.setcellvalue) {
+        // 2a. 【关键】直接操作 flowdata，不调用 setcellvalue API
+        // 这样可以避免：
+        // - 触发 Luckysheet 的操作队列（undo/redo stack）
+        // - 触发 celldata 同步更新
+        // - 触发 cellUpdated 等内部钩子
+        // - 导致后续点击时的双重删除问题
+        if (flowdata[row]) {
           for (let col = startCol; col <= endCol; col++) {
-            ls.setcellvalue(row, col, null)
+            flowdata[row][col] = null  // 直接置空
           }
         }
 
