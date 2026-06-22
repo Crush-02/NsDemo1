@@ -180,29 +180,12 @@ function installLuckysheetPerformancePatch() {
     console.warn('[Patch] ⚠️ 未找到 jfrefreshgrid 函数')
   }
 
-  // ===== Patch 2: 替换 setcellvalue =====
-  if (typeof ls.setcellvalue === 'function') {
-    const originalSetCellValue = ls.setcellvalue.bind(ls)
-    
-    ls.setcellvalue = function patchedSetCellValue(r: number, c: number, value: any, options?: any) {
-      // 强制设置 isRefresh=false（除非明确指定为true）
-      const patchedOptions = { ...options, isRefresh: false }
-      
-      // 调用原始函数
-      const result = originalSetCellValue.call(this, r, c, value, patchedOptions)
-      
-      // 记录脏行（用于最后的增量样式更新）
-      if (window.__isBulkProcessing && r > 0) {
-        window.__dirtyRowsForBulk.add(r)
-      }
-      
-      return result
-    }
-    
-    console.log('[Patch] ✓ setcellvalue 已替换：禁止自动刷新')
-  } else {
-    console.warn('[Patch] ⚠️ 未找到 setcellvalue 函数')
-  }
+  // ⚠️ 注意：不再 Patch setcellvalue
+  // 原因：强制 isRefresh=false 会导致 Luckysheet 内部数据不一致（flowdata vs celldata）
+  // 现在的策略：
+  // - setcellvalue 正常调用（允许 Luckysheet 内部数据同步机制正常工作）
+  // - 但其内部触发的 jfrefreshgrid 调用会被上面的 Patch 拦截
+  // - 最终由 handleBulkDelete 在关闭批量模式后统一刷新一次
 
   console.log('[Patch] ✅ Luckysheet 性能补丁安装完成！')
   console.log('[Patch]   大量删除/编辑操作将使用快速路径')
