@@ -71,6 +71,99 @@ const validationPhaseText = computed(() => {
 let lastEditedCell: { row: number; col: number } | null = null
 let autoSaveTimer: ReturnType<typeof setInterval> | null = null
 
+// ==================== 批量操作防御系统 ====================
+/** 批量操作状态跟踪 */
+interface BatchOperationState {
+  isActive: boolean
+  changedRows: Set<number>
+  changedCols: Set<number>
+  operationType: 'DELETE' | 'EDIT' | 'UNKNOWN'
+  startTime: number
+  updateCount: number
+}
+let batchOp: BatchOperationState | null = null
+
+const BATCH_DETECT_THRESHOLD = 20
+const BATCH_DETECT_WINDOW_MS = 100
+let batchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 处理 cellUpdated 事件（带批量操作防御）
+ */
+function handleCellUpdate(r: number, c: number, oldValue: any, newValue: any) {
+  if (r === 0) return
+  lastEditedCell = { row: r, col: c }
+
+  const now = Date.now()
+  const isEmptyValue = newValue === null || newValue === undefined || String(newValue).trim() === ''
+
+  if (!batchOp) {
+    batchOp = {
+      isActive: false,
+      changedRows: new Set(),
+      changedCols: new Set(),
+      operationType: isEmptyValue ? 'DELETE' : 'EDIT',
+      startTime: now,
+      updateCount: 1,
+    }
+    batchOp.changedRows.add(r)
+    batchOp.changedCols.add(c)
+    if (batchDebounceTimer) clearTimeout(batchDebounceTimer)
+    batchDebounceTimer = setTimeout(flushBatchOperation, BATCH_DETECT_WINDOW_MS)
+  } else {
+    batchOp.updateCount++
+    batchOp.changedRows.add(r)
+    batchOp.changedCols.add(c)
+    if (!isEmptyValue && batchOp.operationType === 'DELETE') {
+      batchOp.operationType = 'EDIT'
+    }
+    if (!batchOp.isActive && batchOp.updateCount >= BATCH_DETECT_THRESHOLD) {
+      batchOp.isActive = true
+      showValidationOverlay.value = true
+      console.log(`[BatchDefender] 检测到批量${batchOp.operationType === 'DELETE' ? '删除' : '编辑'}操作`)
+    }
+    if (batchDebounceTimer) clearTimeout(batchDebounceTimer)
+    batchDebounceTimer = setTimeout(flushBatchOperation, BATCH_DETECT_WINDOW_MS)
+  }
+
+  if (batchOp?.isActive) return
+  validation.onCellInput(r, c)
+}
+
+function flushBatchOperation() {
+  batchDebounceTimer = null
+  if (!batchOp || batchOp.changedRows.size === 0) {
+    batchOp = null
+    return
+  }
+
+  const { changedRows, changedCols, operationType, isActive } = batchOp
+  const rowsArr = Array.from(changedRows)
+  const colsArr = Array.from(changedCols)
+
+  console.log(`[BatchDefender] 刷新批量操作: type=${operationType}, rows=${rowsArr.length}`)
+
+  if (isActive && operationType === 'DELETE' && rowsArr.length > validation.FAST_DELETE_THRESHOLD) {
+    validation.handleBulkDelete(rowsArr)
+    watchProcessingState()
+  } else if (isActive && rowsArr.length > validation.BATCH_THRESHOLD) {
+    validation.onBatchInputComplete(rowsArr, colsArr)
+    watchProcessingState()
+  } else {
+    for (const row of changedRows) {
+      for (const col of changedCols) {
+        validation.onCellInput(row, col, changedRows.size > 1)
+      }
+    }
+    if (changedRows.size > 1) {
+      validation.onBatchInputComplete(rowsArr, colsArr)
+    }
+    showValidationOverlay.value = false
+  }
+
+  batchOp = null
+}
+
 /** 上次选中区域所有单元格的值快照，用于检测Delete/Backspace/多选编辑 */
 let lastSelectionSnapshot: Map<string, string> = new Map()
 
@@ -291,13 +384,8 @@ function initLuckysheet(extraCelldata?: CellData[]) {
       },
       cellUpdated(r: number, c: number) {
         if (r < FINANCE_HEADER_ROW_COUNT) return
-        // 先触发上一个编辑单元格的blur校验
-        if (lastEditedCell && (lastEditedCell.row !== r || lastEditedCell.col !== c)) {
-          const { row, col } = lastEditedCell
-          validation.onCellBlur(row, col)
-        }
-        lastEditedCell = { row: r, col: c }
-        validation.onCellInput(r, c)
+        // 使用批量操作防御系统处理更新（内部会处理lastEditedCell和onCellInput）
+        handleCellUpdate(r, c, null, null)
       },
       cellMousedown() {
         // 检测上次选中区域中所有单元格值是否变化

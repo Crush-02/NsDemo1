@@ -68,6 +68,133 @@ const validationPhaseText = computed(() => {
 let lastEditedCell: { row: number; col: number } | null = null
 let autoSaveTimer: ReturnType<typeof setInterval> | null = null
 
+// ==================== 批量操作防御系统 ====================
+/** 批量操作状态跟踪 */
+interface BatchOperationState {
+  isActive: boolean           // 是否处于批量操作中
+  changedRows: Set<number>   // 变化的行集合
+  changedCols: Set<number>   // 变化的列集合
+  operationType: 'DELETE' | 'EDIT' | 'UNKNOWN'  // 操作类型
+  startTime: number          // 开始时间戳
+  updateCount: number        // 已收到的更新次数
+}
+let batchOp: BatchOperationState | null = null
+
+/** 批量操作检测阈值：收到多少次连续更新后判定为批量操作 */
+const BATCH_DETECT_THRESHOLD = 20
+
+/** 批量操作检测窗口：多少毫秒内的更新视为同一批次 */
+const BATCH_DETECT_WINDOW_MS = 100
+
+/** 防抖定时器ID */
+let batchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 处理 cellUpdated 事件（带批量操作防御）
+ * 核心改进：检测到批量删除/编辑时进入静默模式，避免逐格校验导致卡死
+ */
+function handleCellUpdate(r: number, c: number, oldValue: any, newValue: any) {
+  if (r === 0) return
+
+  // 记录编辑位置
+  lastEditedCell = { row: r, col: c }
+
+  // ===== 批量操作检测与防御 =====
+  const now = Date.now()
+  const isEmptyValue = newValue === null || newValue === undefined || String(newValue).trim() === ''
+
+  if (!batchOp) {
+    // 创建新的批量操作上下文
+    batchOp = {
+      isActive: false,
+      changedRows: new Set(),
+      changedCols: new Set(),
+      operationType: isEmptyValue ? 'DELETE' : 'EDIT',
+      startTime: now,
+      updateCount: 1,
+    }
+    batchOp.changedRows.add(r)
+    batchOp.changedCols.add(c)
+
+    // 设置防抖：如果窗口期内没有新更新，则处理当前批次
+    if (batchDebounceTimer) clearTimeout(batchDebounceTimer)
+    batchDebounceTimer = setTimeout(flushBatchOperation, BATCH_DETECT_WINDOW_MS)
+
+  } else {
+    // 累积更新
+    batchOp.updateCount++
+    batchOp.changedRows.add(r)
+    batchOp.changedCols.add(c)
+
+    // 更新操作类型（如果有非空值则视为编辑）
+    if (!isEmptyValue && batchOp.operationType === 'DELETE') {
+      batchOp.operationType = 'EDIT'
+    }
+
+    // 检测是否达到批量阈值 → 激活静默模式
+    if (!batchOp.isActive && batchOp.updateCount >= BATCH_DETECT_THRESHOLD) {
+      batchOp.isActive = true
+      showValidationOverlay.value = true
+      console.log(`[BatchDefender] 检测到批量${batchOp.operationType === 'DELETE' ? '删除' : '编辑'}操作，已静默 ${batchOp.updateCount} 次更新`)
+    }
+
+    // 重置防抖定时器
+    if (batchDebounceTimer) clearTimeout(batchDebounceTimer)
+    batchDebounceTimer = setTimeout(flushBatchOperation, BATCH_DETECT_WINDOW_MS)
+  }
+
+  // 如果处于批量静默模式 → 跳过单格校验
+  if (batchOp?.isActive) {
+    return // 静默：不调用 onCellInput
+  }
+
+  // 正常模式：单格即时校验
+  validation.onCellInput(r, c)
+}
+
+/**
+ * 刷新批量操作（防抖回调）
+ * 在批量操作结束后统一处理所有累积的变更
+ */
+function flushBatchOperation() {
+  batchDebounceTimer = null
+
+  if (!batchOp || batchOp.changedRows.size === 0) {
+    batchOp = null
+    return
+  }
+
+  const { changedRows, changedCols, operationType, isActive } = batchOp
+  const rowsArr = Array.from(changedRows)
+  const colsArr = Array.from(changedCols)
+
+  console.log(`[BatchDefender] 刷新批量操作: type=${operationType}, rows=${rowsArr.length}, cols=${colsArr.length}, wasSilent=${isActive}`)
+
+  if (isActive && operationType === 'DELETE' && rowsArr.length > validation.FAST_DELETE_THRESHOLD) {
+    // 大批量删除：走快速删除路径（分帧异步）
+    validation.handleBulkDelete(rowsArr)
+    watchProcessingState()
+  } else if (isActive && rowsArr.length > validation.BATCH_THRESHOLD) {
+    // 大批量编辑：走分帧处理路径
+    validation.onBatchInputComplete(rowsArr, colsArr)
+    watchProcessingState()
+  } else {
+    // 小批量或非静默：正常处理每个单元格
+    for (const row of changedRows) {
+      for (const col of changedCols) {
+        validation.onCellInput(row, col, changedRows.size > 1)
+      }
+    }
+    if (changedRows.size > 1) {
+      validation.onBatchInputComplete(rowsArr, colsArr)
+    }
+    // 小批量操作不需要遮罩，直接隐藏
+    showValidationOverlay.value = false
+  }
+
+  batchOp = null
+}
+
 /** 上次选中区域所有单元格的值快照，用于检测Delete/Backspace/多选编辑 */
 let lastSelectionSnapshot: Map<string, string> = new Map()
 
@@ -244,11 +371,8 @@ function initLuckysheet(extraCelldata?: CellData[]) {
         if (r === 0) return false
       },
       cellUpdated(r: number, c: number, oldValue: any, newValue: any, isRefresh: boolean) {
-        if (r === 0) return
-        // 记录编辑的单元格位置，等失焦时触发blur校验
-        lastEditedCell = { row: r, col: c }
-        // 输入时即时校验（格式规则+必填规则）
-        validation.onCellInput(r, c)
+        // 使用批量操作防御系统处理更新
+        handleCellUpdate(r, c, oldValue, newValue)
       },
       // 单元格点击：触发ON_BLUR + 检测值变化 + 显示tooltip
       cellMousedown(cell: any, postion: any, sheetFile: any, ctx: any) {

@@ -858,7 +858,7 @@ export function useFinanceValidationStore() {
     getCellErrors, getAllCellErrors, applyAllValidationStyles, applyAllStylesFromResults,
     flushStyles: flushStyleBatchSync,
     cleanupTimers,
-    // 新增：配置常量和快速删除方法
-    SNAPSHOT_THRESHOLD, FAST_DELETE_THRESHOLD, handleBulkDelete,
+    // 配置常量和快速删除方法
+    BATCH_THRESHOLD, SNAPSHOT_THRESHOLD, FAST_DELETE_THRESHOLD, handleBulkDelete,
   }
 }
