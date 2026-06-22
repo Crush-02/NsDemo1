@@ -85,12 +85,12 @@ function setupKeyboardInterceptor() {
       if ((window as any).__isBulkDeleting) {
         console.log('[KeyInterceptor] ⚠️ 批量删除正在进行中，忽略本次按键')
         e.preventDefault()
-        e.stopPropagation()
+        e.stopImmediatePropagation()
         return false
       }
 
       e.preventDefault()
-      e.stopPropagation()
+      e.stopImmediatePropagation()  // 【关键修复】阻止同一元素上的其他监听器收到事件
 
       console.log(`[KeyInterceptor] 拦截${e.key}键，选中${totalRows}行，使用快速删除路径`)
 
@@ -314,6 +314,14 @@ function flushBatchOperation() {
   const colsArr = Array.from(changedCols)
 
   console.log(`[BatchDefender] 刷新批量操作: type=${operationType}, rows=${rowsArr.length}`)
+
+  // 【关键修复】如果刚完成批量删除（3秒内），跳过，防止二次调用handleBulkDelete
+  if (operationType === 'DELETE' && Date.now() - (window as any).__lastBulkDeleteTime < 3000) {
+    console.log('[BatchDefender] ⏭️ 跳过删除刷新（刚完成批量删除）')
+    batchOp = null
+    showValidationOverlay.value = false
+    return
+  }
 
   if (isActive && operationType === 'DELETE' && rowsArr.length > validation.FAST_DELETE_THRESHOLD) {
     validation.handleBulkDelete(rowsArr)
@@ -553,6 +561,10 @@ function initLuckysheet(extraCelldata?: CellData[]) {
     hook: {
       cellUpdateBefore(r: number) {
         if (r < FINANCE_HEADER_ROW_COUNT) return false
+        // 【关键修复】批量删除期间阻止Luckysheet内部逐格更新，防止触发cellUpdated→BatchDefender→二次handleBulkDelete
+        if ((window as any).__isBulkDeleting || (Date.now() - (window as any).__lastBulkDeleteTime < 3000)) {
+          return false
+        }
       },
       cellUpdated(r: number, c: number) {
         if (r < FINANCE_HEADER_ROW_COUNT) return
