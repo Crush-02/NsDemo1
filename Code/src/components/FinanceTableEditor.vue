@@ -83,8 +83,24 @@ interface BatchOperationState {
 }
 let batchOp: BatchOperationState | null = null
 
-const BATCH_DETECT_THRESHOLD = 20
-const BATCH_DETECT_WINDOW_MS = 100
+/** 批量操作检测阈值：收到多少次连续更新后判定为批量操作
+ *  【重要】生产环境中Luckysheet内部处理较慢，cellUpdated调用间隔可能达到15-20ms
+ *  原值20在生产环境需要300-400ms才能累积到，但防抖窗口只有100ms，导致永远无法触发
+ *  降低到5可以在100ms内可靠触发（5 × 20ms = 100ms）
+ */
+const BATCH_DETECT_THRESHOLD = 5
+
+/** 批量操作检测窗口：多少毫秒内的更新视为同一批次
+ *  【重要】必须大于 (BATCH_DETECT_THRESHOLD × 最大预期调用间隔)
+ *  生产环境最大间隔约20ms → 5 × 20ms = 100ms → 设置为500ms留足余量
+ */
+const BATCH_DETECT_WINDOW_MS = 500
+
+/** 批量操作防抖延迟：最后一次更新后等待多久才执行flush
+ *  【重要】设置为300ms确保所有cellUpdated都到达后再统一处理
+ *  原值100ms太短， Luckysheet可能还在内部循环中
+ */
+const BATCH_DEBOUNCE_DELAY_MS = 300
 let batchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 /**
@@ -109,7 +125,7 @@ function handleCellUpdate(r: number, c: number, oldValue: any, newValue: any) {
     batchOp.changedRows.add(r)
     batchOp.changedCols.add(c)
     if (batchDebounceTimer) clearTimeout(batchDebounceTimer)
-    batchDebounceTimer = setTimeout(flushBatchOperation, BATCH_DETECT_WINDOW_MS)
+    batchDebounceTimer = setTimeout(flushBatchOperation, BATCH_DEBOUNCE_DELAY_MS)
   } else {
     batchOp.updateCount++
     batchOp.changedRows.add(r)
@@ -123,7 +139,7 @@ function handleCellUpdate(r: number, c: number, oldValue: any, newValue: any) {
       console.log(`[BatchDefender] 检测到批量${batchOp.operationType === 'DELETE' ? '删除' : '编辑'}操作`)
     }
     if (batchDebounceTimer) clearTimeout(batchDebounceTimer)
-    batchDebounceTimer = setTimeout(flushBatchOperation, BATCH_DETECT_WINDOW_MS)
+    batchDebounceTimer = setTimeout(flushBatchOperation, BATCH_DEBOUNCE_DELAY_MS)
   }
 
   if (batchOp?.isActive) return
