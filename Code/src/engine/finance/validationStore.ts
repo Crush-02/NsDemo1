@@ -27,6 +27,8 @@ declare global {
     __needsGridRefresh: boolean
     /** 【新增】全局防重入锁：防止 handleBulkDelete 被重复调用 */
     __isBulkDeleting: boolean
+    /** 【新增】最近一次批量删除完成的时间戳，用于防止 cellMousedown 钩子触发二次删除 */
+    __lastBulkDeleteTime: number
   }
 }
 
@@ -36,6 +38,7 @@ if (typeof window !== 'undefined') {
   window.__dirtyRowsForBulk = new Set()
   window.__needsGridRefresh = false
   window.__isBulkDeleting = false  // 【新增】初始化防重入锁
+  window.__lastBulkDeleteTime = 0  // 【新增】初始化时间戳
 }
 
 // ==================== 配置常量 ====================
@@ -486,6 +489,7 @@ export async function handleBulkDelete(rows: number[], colRange?: { startCol: nu
   } finally {
     financeState.isProcessing = false
     window.__isBulkDeleting = false  // 【新增】释放防重入锁
+    window.__lastBulkDeleteTime = Date.now()  // 【新增】记录完成时间，防止cellMousedown二次触发
   }
 }
 

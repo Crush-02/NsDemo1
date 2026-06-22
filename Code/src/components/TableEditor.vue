@@ -113,6 +113,9 @@ function setupKeyboardInterceptor() {
       // 使用分帧异步快速删除（传递精确的行列范围）
       validation.handleBulkDelete(affectedRows, { startCol: minCol, endCol: maxCol })
 
+      // 【关键修复】清空快照，防止 cellMousedown 钩子检测到变化后二次调用 handleBulkDelete
+      lastSelectionSnapshot = new Map()
+
       // 监听完成状态，自动隐藏遮罩
       watchProcessingState()
 
@@ -555,6 +558,14 @@ function initLuckysheet(extraCelldata?: CellData[]) {
           // ===== 新增：大选区智能路径检测 =====
           if (lastSelectionSnapshot.size > validation.SNAPSHOT_THRESHOLD) {
             const operationType = detectOperationType(lastSelectionSnapshot)
+
+            // 【关键修复】如果刚完成批量删除（3秒内），跳过检测，防止二次触发
+            if (Date.now() - (window as any).__lastBulkDeleteTime < 3000) {
+              console.log('[cellMousedown] ⏭️ 跳过删除检测（刚完成批量删除）')
+              lastSelectionSnapshot = captureSelectionSnapshot()
+              setTimeout(() => showTooltipForCurrentCell(), 30)
+              return
+            }
 
             if (operationType === 'DELETE') {
               // 快速删除路径：跳过校验直接清除结果（分帧异步）
