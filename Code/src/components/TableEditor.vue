@@ -498,7 +498,7 @@ function watchProcessingState() {
 }
 
 /** 房产信息必填列索引 */
-const PROPERTY_REQUIRED_COLS = new Set([0, 2, 4, 5, 6, 8])
+const PROPERTY_REQUIRED_COLS = new Set([0, 2, 4, 5, 6, 7, 8])
 
 /** 构建表头行celldata */
 

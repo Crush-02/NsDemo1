@@ -163,18 +163,29 @@ function validatePropertyType(row: number): ValidationResult | null {
   return null
 }
 
-/** 规则2: 格式_计费面积 - 如果有值，必须为正数，最多4位小数 */
-const AREA_REGEX = /^(0|[1-9]\d*)(\.\d{1,4})?$/
+/** 规则2: 格式_计费面积 - 必填，必须为正数（>0），最多4位小数 */
+const AREA_REGEX = /^([1-9]\d*)(\.\d{1,4})?$|^[0]\.\d{1,4}[1-9]\d*$/
 
 function validateBillingArea(row: number): ValidationResult | null {
   const val = getCellText(row, 7)
-  if (val === '') return null
+  // 必填校验
+  if (val === '') {
+    return {
+      isValid: false,
+      ruleId: '必填_计费面积',
+      severity: 'HIGH',
+      message: '计费面积为必填项',
+      row,
+      col: 7,
+    }
+  }
+  // 格式校验：必须为正数（>0），最多4位小数
   if (!AREA_REGEX.test(val)) {
     return {
       isValid: false,
       ruleId: '格式_计费面积',
       severity: 'HIGH',
-      message: '计费面积应为正数，且需保留四位小数',
+      message: '计费面积必须为正数（大于0），支持整数和小数格式，最多4位小数',
       row,
       col: 7,
     }
