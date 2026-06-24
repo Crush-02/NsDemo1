@@ -312,7 +312,14 @@ function handleCellUpdate(r: number, c: number, oldValue: any, newValue: any) {
     if (!batchOp.isActive && batchOp.updateCount >= BATCH_DETECT_THRESHOLD) {
       batchOp.isActive = true
       showValidationOverlay.value = true
-      console.log(`[BatchDefender] 检测到批量${batchOp.operationType === 'DELETE' ? '删除' : '编辑'}操作，已静默 ${batchOp.updateCount} 次更新`)
+      // 【关键修复】立即启用批量模式，跳过后续所有 jfrefreshgrid 调用
+      // 解决：生产环境中 KeyInterceptor 可能不生效，Luckysheet 自行处理 Delete 时
+      // 每个单元格都会触发 jfrefreshgrid（~50ms/次），1000+ 单元格 = 50+ 秒阻塞
+      // 启用批量模式后，Monkey-Patch 的 jfrefreshgrid 会自动跳过，大幅减少阻塞
+      window.__isBulkProcessing = true
+      window.__dirtyRowsForBulk.clear()
+      window.__needsGridRefresh = false
+      console.log(`[BatchDefender] 检测到批量${batchOp.operationType === 'DELETE' ? '删除' : '编辑'}操作，已静默 ${batchOp.updateCount} 次更新，批量模式已启用`)
     }
 
     // 重置防抖定时器（使用独立的防抖延迟，而非检测窗口）
@@ -357,6 +364,7 @@ function flushBatchOperation() {
 
   if (isActive && operationType === 'DELETE' && rowsArr.length > validation.FAST_DELETE_THRESHOLD) {
     // 大批量删除：走快速删除路径（分帧异步），传递列范围防止全删
+    // handleBulkDelete 会在自己的 finally 块中重置 __isBulkProcessing
     const minCol = Math.min(...colsArr)
     const maxCol = Math.max(...colsArr)
     validation.handleBulkDelete(rowsArr, { startCol: minCol, endCol: maxCol })
@@ -365,6 +373,8 @@ function flushBatchOperation() {
     // 大批量编辑：走分帧处理路径
     validation.onBatchInputComplete(rowsArr, colsArr)
     watchProcessingState()
+    // 编辑路径不涉及 handleBulkDelete，需手动重置批量模式
+    window.__isBulkProcessing = false
   } else {
     // 小批量或非静默：正常处理每个单元格
     for (const row of changedRows) {
@@ -377,6 +387,8 @@ function flushBatchOperation() {
     }
     // 小批量操作不需要遮罩，直接隐藏
     showValidationOverlay.value = false
+    // 小批量路径不涉及 handleBulkDelete，需手动重置批量模式
+    window.__isBulkProcessing = false
   }
 
   batchOp = null
@@ -567,8 +579,18 @@ function initLuckysheet(extraCelldata?: CellData[]) {
       // 表头行(第0行)不可编辑
       cellUpdateBefore(r: number, c: number, value: any, isRefresh: boolean) {
         if (r === 0) return false
-        // 【关键修复】批量删除期间阻止Luckysheet内部逐格更新，防止触发cellUpdated→BatchDefender→二次handleBulkDelete
-        if ((window as any).__isBulkDeleting || (Date.now() - (window as any).__lastBulkDeleteTime < 3000)) {
+        // 【关键修复】批量删除期间阻止Luckysheet内部逐格更新
+        // 1. __isBulkDeleting: handleBulkDelete 正在执行时阻止（KeyInterceptor 路径）
+        // 2. __isBulkProcessing: BatchDefender 检测到批量操作后立即阻止（KeyInterceptor 失效时的兜底路径）
+        //    仅在值为空时阻止（删除操作），允许编辑操作正常进行
+        const isEmptyValue = value === null || value === undefined || String(value).trim() === ''
+        if ((window as any).__isBulkDeleting) {
+          return false
+        }
+        if (isEmptyValue && (window as any).__isBulkProcessing) {
+          return false
+        }
+        if (Date.now() - (window as any).__lastBulkDeleteTime < 3000) {
           return false
         }
       },
