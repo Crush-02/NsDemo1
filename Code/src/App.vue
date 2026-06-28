@@ -14,6 +14,9 @@
     </Toolbar>
     <div class="main-area">
       <TableEditor ref="tableEditorRef" />
+      <div v-if="showPanel" class="sync-scrollbar-y" @scroll="onSyncScroll">
+        <div class="sync-scrollbar-content"></div>
+      </div>
       <ValidationPanel :visible="showPanel" @close="showPanel = false" />
     </div>
     <ValidationBar />
@@ -31,6 +34,9 @@
     </Toolbar>
     <div class="main-area">
       <FinanceTableEditor ref="financeEditorRef" />
+      <div v-if="showFinancePanel" class="sync-scrollbar-y" @scroll="onSyncScroll">
+        <div class="sync-scrollbar-content"></div>
+      </div>
       <FinanceValidationPanel :visible="showFinancePanel" @close="showFinancePanel = false" />
     </div>
     <FinanceValidationBar />
@@ -38,7 +44,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import HomeView from './components/HomeView.vue'
 import Toolbar from './components/Toolbar.vue'
 import TableEditor from './components/TableEditor.vue'
@@ -89,6 +95,104 @@ async function onFinanceExport() {
   if (canExport === false) return
   financeEditorRef.value?.exportExcel()
 }
+
+// ==================== 同步滚动条：面板打开时在面板左侧提供表格垂直滚动条 ====================
+
+let syncScrollRAF = 0
+let isUserScrolling = false
+
+/** 当用户拖动同步滚动条时，同步到 Luckysheet */
+function onSyncScroll(e: Event) {
+  const syncBar = e.target as HTMLElement
+  const luckysheetBar = document.querySelector('#luckysheet-scrollbar-y') as HTMLElement | null
+  if (!luckysheetBar || !syncBar) return
+
+  isUserScrolling = true
+  // 按比例同步滚动位置
+  const ratio = syncBar.scrollTop / (syncBar.scrollHeight - syncBar.clientHeight || 1)
+  luckysheetBar.scrollTop = ratio * (luckysheetBar.scrollHeight - luckysheetBar.clientHeight)
+  luckysheetBar.dispatchEvent(new Event('scroll'))
+  requestAnimationFrame(() => { isUserScrolling = false })
+}
+
+/** 从 Luckysheet 滚动条同步到自定义滚动条 */
+function syncFromLuckysheet() {
+  if (isUserScrolling) return
+  const luckysheetBar = document.querySelector('#luckysheet-scrollbar-y') as HTMLElement | null
+  const syncBars = document.querySelectorAll('.sync-scrollbar-y')
+  if (!luckysheetBar || syncBars.length === 0) return
+
+  const ratio = luckysheetBar.scrollTop / (luckysheetBar.scrollHeight - luckysheetBar.clientHeight || 1)
+  syncBars.forEach((bar) => {
+    const el = bar as HTMLElement
+    el.scrollTop = ratio * (el.scrollHeight - el.clientHeight)
+  })
+}
+
+/** 同步滚动条内容高度以匹配 Luckysheet 滚动范围 */
+function updateSyncScrollbarSize() {
+  const luckysheetBar = document.querySelector('#luckysheet-scrollbar-y') as HTMLElement | null
+  const syncBars = document.querySelectorAll('.sync-scrollbar-y')
+  if (!luckysheetBar || syncBars.length === 0) return
+
+  // 计算缩放比例：让自定义滚动条的内容高度 = 可视高度 * (luckysheet.scrollHeight / luckysheet.clientHeight)
+  const scrollRange = luckysheetBar.scrollHeight - luckysheetBar.clientHeight
+  syncBars.forEach((bar) => {
+    const el = bar as HTMLElement
+    const content = el.querySelector('.sync-scrollbar-content') as HTMLElement
+    if (content) {
+      // 内容高度 = 可视高度 + 滚动范围，确保能滚动同样的比例
+      content.style.height = `${el.clientHeight + scrollRange}px`
+    }
+  })
+}
+
+/** 监听 Luckysheet 滚动条的变化 */
+function startSyncLoop() {
+  let lastScrollTop = -1
+  let lastScrollHeight = -1
+
+  function tick() {
+    const luckysheetBar = document.querySelector('#luckysheet-scrollbar-y') as HTMLElement | null
+    if (luckysheetBar) {
+      if (luckysheetBar.scrollTop !== lastScrollTop) {
+        lastScrollTop = luckysheetBar.scrollTop
+        syncFromLuckysheet()
+      }
+      if (luckysheetBar.scrollHeight !== lastScrollHeight) {
+        lastScrollHeight = luckysheetBar.scrollHeight
+        updateSyncScrollbarSize()
+      }
+    }
+    syncScrollRAF = requestAnimationFrame(tick)
+  }
+  syncScrollRAF = requestAnimationFrame(tick)
+}
+
+// 面板显示时启动同步，隐藏时停止
+watch([showPanel, showFinancePanel], ([p1, p2]) => {
+  if (p1 || p2) {
+    nextTick(() => {
+      updateSyncScrollbarSize()
+      startSyncLoop()
+    })
+  } else {
+    cancelAnimationFrame(syncScrollRAF)
+  }
+})
+
+onMounted(() => {
+  if (showPanel.value || showFinancePanel.value) {
+    nextTick(() => {
+      updateSyncScrollbarSize()
+      startSyncLoop()
+    })
+  }
+})
+
+onUnmounted(() => {
+  cancelAnimationFrame(syncScrollRAF)
+})
 </script>
 
 <style>
@@ -117,5 +221,38 @@ html, body, #app {
   display: flex;
   overflow: hidden;
   position: relative;
+}
+
+/* 同步滚动条：面板打开时显示在面板左侧，用于拖动表格 */
+.sync-scrollbar-y {
+  width: 14px;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #f5f5f5;
+  border-left: 1px solid #ddd;
+  flex-shrink: 0;
+}
+
+.sync-scrollbar-y::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sync-scrollbar-y::-webkit-scrollbar-track {
+  background: #f0f0f0;
+  border-radius: 4px;
+}
+
+.sync-scrollbar-y::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+.sync-scrollbar-y::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+.sync-scrollbar-content {
+  width: 1px;
 }
 </style>
