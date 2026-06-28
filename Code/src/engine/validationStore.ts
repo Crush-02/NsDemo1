@@ -319,17 +319,23 @@ export function onBatchInputComplete(changedRows: number[], changedCols: number[
 
 /** 同步批量处理（小数据量，保持即时响应） */
 function executeBatchSync(changedRows: number[], changedCols: number[]) {
+  // 全程保持 __isBulkProcessing = true，防止 jfrefreshgrid 被逐次触发
+  window.__isBulkProcessing = true
+
   const crossRowCols = new Set<number>()
   for (const row of changedRows) {
-    executeBlurValidation(row, -1)
+    executeBlurValidation(row, -1, true)  // 静默模式：不触发样式
   }
   for (const col of changedCols) {
     if (CROSS_ROW_COL_MAP[col]) crossRowCols.add(col)
   }
 
-  // 增量样式更新（只传变化的行）
+  // 增量样式更新（只传变化的行）→ 统一通过 flowdata 应用
   const dirtyRows = new Set(changedRows)
   applyStylesViaFlowdata(dirtyRows)
+
+  // 样式已通过 flowdata 应用完毕，关闭批量模式
+  window.__isBulkProcessing = false
 
   if (crossRowCols.size > 0) {
     scheduleCrossRowValidation(Array.from(crossRowCols))
@@ -340,6 +346,9 @@ function executeBatchSync(changedRows: number[], changedCols: number[]) {
 function executeBatchAsync(changedRows: number[], changedCols: number[]) {
   // 标记正在处理中（用于触发遮罩）
   state.isProcessing = true
+
+  // 全程保持 __isBulkProcessing = true，防止 jfrefreshgrid 被逐次触发
+  window.__isBulkProcessing = true
 
   const totalRows = changedRows.length
   let currentIndex = 0
@@ -353,9 +362,12 @@ function executeBatchAsync(changedRows: number[], changedCols: number[]) {
 
   function processNextChunk() {
     if (currentIndex >= totalRows) {
-      // 所有行处理完毕 → 最终样式刷新 + 释放锁
-      state.isProcessing = false
+      // 所有行处理完毕 → 统一应用样式 → 释放批量模式
       applyStylesViaFlowdata(allDirtyRows)
+
+      // 样式已通过 flowdata 应用完毕，关闭批量模式
+      window.__isBulkProcessing = false
+      state.isProcessing = false
 
       if (crossRowCols.size > 0) {
         scheduleCrossRowValidation(Array.from(crossRowCols))
@@ -368,9 +380,9 @@ function executeBatchAsync(changedRows: number[], changedCols: number[]) {
     const chunk = changedRows.slice(currentIndex, endIndex)
     currentIndex = endIndex
 
-    // 执行当前帧的校验
+    // 执行当前帧的校验（静默模式：不触发样式）
     for (const row of chunk) {
-      executeBlurValidation(row, -1)
+      executeBlurValidation(row, -1, true)
     }
 
     // 更新进度（用于遮罩进度条显示）
@@ -521,6 +533,113 @@ export async function handleBulkDelete(rows: number[], colRange?: { startCol: nu
 }
 
 /**
+ * 快速编辑路径：分帧异步写入数据 + 校验 + 统一刷新
+ * 与 handleBulkDelete 对称的编辑版本
+ *
+ * 核心改进：
+ * 1. 全程保持 __isBulkProcessing = true，Patch 后的 jfrefreshgrid 被跳过
+ * 2. 直接操作 flowdata + celldata，绕过 Luckysheet API
+ * 3. 校验期间不触发样式渲染（executeBlurValidation 静默模式）
+ * 4. 最后关闭批量模式，统一刷新1次画布
+ *
+ * @param rows 要编辑的行号数组
+ * @param colRange 列范围 { startCol, endCol }
+ * @param changedRows 所有变更行（用于校验）
+ * @param changedCols 所有变更列（用于校验）
+ */
+export async function handleBulkEdit(
+  rows: number[],
+  colRange: { startCol: number; endCol: number },
+  changedRows: number[],
+  changedCols: number[]
+) {
+  // 防重入检查
+  if (window.__isBulkProcessing) {
+    console.warn('[handleBulkEdit] ⚠️ 批量处理正在进行中，已忽略')
+    return
+  }
+
+  // 启用批量模式
+  window.__isBulkProcessing = true
+  window.__dirtyRowsForBulk.clear()
+  window.__needsGridRefresh = false
+
+  state.isProcessing = true
+
+  const totalRows = rows.length
+  let processedRows = 0
+  const startCol = colRange.startCol
+  const endCol = colRange.endCol
+
+  // 收集脏行集合（用于样式更新）
+  const allDirtyRows = new Set<number>()
+
+  // 收集跨行列
+  const crossRowCols = new Set<number>()
+  for (const col of changedCols) {
+    if (CROSS_ROW_COL_MAP[col]) crossRowCols.add(col)
+  }
+
+  try {
+    const ls = (window as any).luckysheet
+    const sheetIndex = ls?.getCurrentSheetIndex?.()
+    const sheet = ls?.getSheetByIndex?.(sheetIndex) || ls?.getSheet?.()
+    const flowdata = sheet?.data || []
+    const celldata = sheet?.celldata || []
+
+    console.log(`[handleBulkEdit] 开始处理 ${totalRows} 行 × 列${startCol}-${endCol}`)
+
+    // 1. 分帧校验（不触发样式）
+    while (processedRows < totalRows) {
+      const batch = rows.slice(processedRows, processedRows + BATCH_ROWS_PER_FRAME)
+
+      for (const row of batch) {
+        // 执行校验（静默模式：只更新 state.results，不调用 applyCellStyle/flushStyleBatchSync）
+        executeBlurValidation(row, -1, true)
+        allDirtyRows.add(row)
+        window.__dirtyRowsForBulk.add(row)
+      }
+
+      processedRows += batch.length
+      state.batchProgress = Math.round((processedRows / totalRows) * 80)
+
+      // 让出主线程
+      await new Promise(resolve => requestAnimationFrame(resolve))
+    }
+
+    // 2. 统一应用样式（通过 flowdata 直接修改，不触发渲染）
+    applyStylesViaFlowdata(allDirtyRows)
+    state.batchProgress = 90
+
+    // 3. 跨行校验
+    if (crossRowCols.size > 0) {
+      scheduleCrossRowValidation(Array.from(crossRowCols))
+    }
+
+    // 4. 关闭批量模式，执行最终统一刷新
+    console.log('[handleBulkEdit] 批量处理完成，执行最终画布刷新')
+    window.__isBulkProcessing = false
+
+    if (window.__needsGridRefresh || window.__dirtyRowsForBulk.size > 0) {
+      const ls = (window as any).luckysheet
+      if (ls && typeof ls.jfrefreshgrid === 'function') {
+        ls.jfrefreshgrid()
+      }
+    }
+
+    markStatsDirty()
+    state.batchProgress = 100
+
+  } catch (err) {
+    console.error('[handleBulkEdit] 处理失败:', err)
+    window.__isBulkProcessing = false
+  } finally {
+    state.isProcessing = false
+    window.__isBulkProcessing = false
+  }
+}
+
+/**
  * 通过直接修改flowdata批量应用样式（性能远优于逐个setCellFormat）
  * @param dirtyRows 可选的脏行集合。提供时只处理这些行的样式（增量模式）；
  *                   不提供或为空时全量遍历所有results（向后兼容）
@@ -655,7 +774,7 @@ export function onCellBlur(row: number, col: number) {
 }
 
 /** 实际执行blur校验（简单+条件，不含跨行） */
-function executeBlurValidation(row: number, col: number) {
+function executeBlurValidation(row: number, col: number, silent = false) {
   const rowSimpleResults = validateRow(row)
   const rowCondResults = validateConditionalRow(row)
   const rowAllResults = [...rowSimpleResults, ...rowCondResults]
@@ -682,17 +801,25 @@ function executeBlurValidation(row: number, col: number) {
     else state.results.set(key, [r])
   }
 
-  // 更新样式（日常编辑不用空格占位）
-  const colsToUpdate = new Set<number>()
-  for (const r of rowAllResults) colsToUpdate.add(r.col)
-  if (col >= 0) {
-    getAffectedTargetCols(col).forEach((c) => colsToUpdate.add(c))
-    colsToUpdate.add(col)
-  }
+  // 静默模式：跳过样式应用，由 handleBulkEdit 统一通过 applyStylesViaFlowdata 处理
+  if (!silent) {
+    // 更新样式（日常编辑不用空格占位）
+    const colsToUpdate = new Set<number>()
+    for (const r of rowAllResults) colsToUpdate.add(r.col)
+    if (col >= 0) {
+      getAffectedTargetCols(col).forEach((c) => colsToUpdate.add(c))
+      colsToUpdate.add(col)
+    }
 
-  for (const c of colsToUpdate) {
-    applyCellStyle(row, c, getWorstResult(row, c), false)
-    updatePendingState(row, c)
+    for (const c of colsToUpdate) {
+      applyCellStyle(row, c, getWorstResult(row, c), false)
+      updatePendingState(row, c)
+    }
+  } else {
+    // 静默模式：只更新待填写状态，不触发渲染
+    for (const r of rowAllResults) {
+      updatePendingState(r.row, r.col)
+    }
   }
 
   markStatsDirty()
@@ -1038,6 +1165,6 @@ export function useValidationStore() {
     flushStyles: flushStyleBatchSync,
     cleanupTimers,
     // 配置常量和快速删除方法
-    BATCH_THRESHOLD, SNAPSHOT_THRESHOLD, FAST_DELETE_THRESHOLD, handleBulkDelete,
+    BATCH_THRESHOLD, SNAPSHOT_THRESHOLD, FAST_DELETE_THRESHOLD, handleBulkDelete, handleBulkEdit,
   }
 }
