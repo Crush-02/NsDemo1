@@ -22,10 +22,12 @@ declare global {
     __dirtyRowsForBulk: Set<number>
     /** 批量处理结束后是否需要最终刷新画布 */
     __needsGridRefresh: boolean
-    /** 【新增】全局防重入锁：防止 handleBulkDelete 被重复调用 */
+    /** 全局防重入锁：防止 handleBulkDelete 被重复调用 */
     __isBulkDeleting: boolean
-    /** 【新增】最近一次批量删除完成的时间戳，用于防止 cellMousedown 钩子触发二次删除 */
+    /** 最近一次批量删除完成的时间戳，用于防止 cellMousedown 钩子触发二次删除 */
     __lastBulkDeleteTime: number
+    /** 全局防重入锁：防止 handleBulkEdit 被重复调用 */
+    __isBulkEditing: boolean
   }
 }
 
@@ -34,8 +36,9 @@ if (typeof window !== 'undefined') {
   window.__isBulkProcessing = false
   window.__dirtyRowsForBulk = new Set()
   window.__needsGridRefresh = false
-  window.__isBulkDeleting = false  // 【新增】初始化防重入锁
-  window.__lastBulkDeleteTime = 0  // 【新增】初始化时间戳
+  window.__isBulkDeleting = false
+  window.__lastBulkDeleteTime = 0
+  window.__isBulkEditing = false
 }
 
 // ==================== 配置常量 ====================
@@ -538,7 +541,7 @@ export async function handleBulkDelete(rows: number[], colRange?: { startCol: nu
  *
  * 核心改进：
  * 1. 全程保持 __isBulkProcessing = true，Patch 后的 jfrefreshgrid 被跳过
- * 2. 直接操作 flowdata + celldata，绕过 Luckysheet API
+ * 2. 将用户输入的值写入被 cellUpdateBefore 拦截的单元格（flowdata + celldata 双写）
  * 3. 校验期间不触发样式渲染（executeBlurValidation 静默模式）
  * 4. 最后关闭批量模式，统一刷新1次画布
  *
@@ -546,20 +549,26 @@ export async function handleBulkDelete(rows: number[], colRange?: { startCol: nu
  * @param colRange 列范围 { startCol, endCol }
  * @param changedRows 所有变更行（用于校验）
  * @param changedCols 所有变更列（用于校验）
+ * @param editValue 用户输入的值（cellUpdateBefore 拦截后需要手动写入）
  */
 export async function handleBulkEdit(
   rows: number[],
   colRange: { startCol: number; endCol: number },
   changedRows: number[],
-  changedCols: number[]
+  changedCols: number[],
+  editValue?: any
 ) {
-  // 防重入检查
-  if (window.__isBulkProcessing) {
-    console.warn('[handleBulkEdit] ⚠️ 批量处理正在进行中，已忽略')
+  // 防重入检查：使用 __isBulkEditing 而非 __isBulkProcessing
+  // 因为 BatchDefender 激活时已将 __isBulkProcessing 设为 true
+  if (window.__isBulkEditing) {
+    console.warn('[handleBulkEdit] ⚠️ 检测到重复调用，已忽略（防重入锁生效）')
     return
   }
 
-  // 启用批量模式
+  // 启用防重入锁
+  window.__isBulkEditing = true
+
+  // __isBulkProcessing 已由 BatchDefender 设为 true，此处确保状态正确
   window.__isBulkProcessing = true
   window.__dirtyRowsForBulk.clear()
   window.__needsGridRefresh = false
@@ -587,9 +596,48 @@ export async function handleBulkEdit(
     const flowdata = sheet?.data || []
     const celldata = sheet?.celldata || []
 
-    console.log(`[handleBulkEdit] 开始处理 ${totalRows} 行 × 列${startCol}-${endCol}`)
+    console.log(`[handleBulkEdit] 开始处理 ${totalRows} 行 × 列${startCol}-${endCol}, editValue="${editValue}"`)
 
-    // 1. 分帧校验（不触发样式）
+    // 1. 分帧写入数据（cellUpdateBefore 拦截了 Luckysheet 内部写入，需要手动补写）
+    if (editValue !== undefined && editValue !== null) {
+      while (processedRows < totalRows) {
+        const batch = rows.slice(processedRows, processedRows + BATCH_ROWS_PER_FRAME)
+
+        for (const row of batch) {
+          for (let c = startCol; c <= endCol; c++) {
+            // 写入 flowdata
+            if (flowdata[row]) {
+              let cell = flowdata[row][c]
+              if (!cell) {
+                cell = { v: editValue, m: String(editValue), ct: { fa: 'General', t: 'g' } }
+                flowdata[row][c] = cell
+              } else {
+                cell.v = editValue
+                cell.m = String(editValue)
+                // 保留原有格式
+                if (!cell.ct) cell.ct = { fa: 'General', t: 'g' }
+              }
+            }
+
+            // 同步 celldata
+            const key = `${row}_${c}`
+            const idx = celldata.findIndex((item: any) => item.r === row && item.c === c)
+            if (idx >= 0) {
+              celldata[idx].v = { v: editValue, m: String(editValue), ct: celldata[idx].v?.ct || { fa: 'General', t: 'g' } }
+            } else {
+              celldata.push({ r: row, c: c, v: { v: editValue, m: String(editValue), ct: { fa: 'General', t: 'g' } } })
+            }
+          }
+        }
+
+        processedRows += batch.length
+        // 让出主线程
+        await new Promise(resolve => requestAnimationFrame(resolve))
+      }
+    }
+
+    // 2. 分帧校验（不触发样式）
+    processedRows = 0
     while (processedRows < totalRows) {
       const batch = rows.slice(processedRows, processedRows + BATCH_ROWS_PER_FRAME)
 
@@ -607,16 +655,16 @@ export async function handleBulkEdit(
       await new Promise(resolve => requestAnimationFrame(resolve))
     }
 
-    // 2. 统一应用样式（通过 flowdata 直接修改，不触发渲染）
+    // 3. 统一应用样式（通过 flowdata 直接修改，不触发渲染）
     applyStylesViaFlowdata(allDirtyRows)
     state.batchProgress = 90
 
-    // 3. 跨行校验
+    // 4. 跨行校验
     if (crossRowCols.size > 0) {
       scheduleCrossRowValidation(Array.from(crossRowCols))
     }
 
-    // 4. 关闭批量模式，执行最终统一刷新
+    // 5. 关闭批量模式，执行最终统一刷新
     console.log('[handleBulkEdit] 批量处理完成，执行最终画布刷新')
     window.__isBulkProcessing = false
 
@@ -636,6 +684,7 @@ export async function handleBulkEdit(
   } finally {
     state.isProcessing = false
     window.__isBulkProcessing = false
+    window.__isBulkEditing = false  // 释放防重入锁
   }
 }
 

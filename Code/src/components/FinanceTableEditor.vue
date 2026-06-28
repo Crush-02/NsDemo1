@@ -236,6 +236,7 @@ interface BatchOperationState {
   operationType: 'DELETE' | 'EDIT' | 'UNKNOWN'
   startTime: number
   updateCount: number
+  editValue?: any            // 编辑操作时记录用户输入的值（用于 handleBulkEdit 双写）
 }
 let batchOp: BatchOperationState | null = null
 
@@ -277,6 +278,7 @@ function handleCellUpdate(r: number, c: number, oldValue: any, newValue: any) {
       operationType: isEmptyValue ? 'DELETE' : 'EDIT',
       startTime: now,
       updateCount: 1,
+      editValue: isEmptyValue ? undefined : newValue,  // 记录编辑值
     }
     batchOp.changedRows.add(r)
     batchOp.changedCols.add(c)
@@ -341,7 +343,7 @@ function flushBatchOperation() {
     // handleBulkEdit 会在自己的 finally 块中重置 __isBulkProcessing
     const minCol = Math.min(...colsArr)
     const maxCol = Math.max(...colsArr)
-    validation.handleBulkEdit(rowsArr, { startCol: minCol, endCol: maxCol }, rowsArr, colsArr)
+    validation.handleBulkEdit(rowsArr, { startCol: minCol, endCol: maxCol }, rowsArr, colsArr, batchOp?.editValue)
     watchProcessingState()
   } else if (isActive && rowsArr.length > validation.BATCH_THRESHOLD) {
     // 中等批量：走分帧处理路径
@@ -649,24 +651,29 @@ function initLuckysheet(extraCelldata?: CellData[]) {
             }
 
             if (operationType === 'BATCH_EDIT' && lastSelectionSnapshot.size > validation.FAST_DELETE_THRESHOLD) {
-              // 大批量编辑路径：分帧处理 + 遮罩保护
+              // 大批量编辑路径：走 handleBulkEdit（分帧异步 + 遮罩保护）
               const changedRows = new Set<number>()
               const changedCols = new Set<number>()
+              let editValue: any = undefined
               for (const [key, oldVal] of lastSelectionSnapshot.entries()) {
                 const [rs, cs] = key.split('-')
                 const row = Number(rs), col = Number(cs)
                 const newVal = getCellValue(row, col)
                 if (oldVal !== newVal) {
-                  validation.onCellInput(row, col, true) // 批量模式清除结果
                   changedRows.add(row)
                   changedCols.add(col)
+                  if (editValue === undefined && newVal !== null && newVal !== undefined && String(newVal).trim() !== '') {
+                    editValue = newVal  // 捕获用户输入的值
+                  }
                 }
               }
               if (changedRows.size > 0) {
                 showValidationOverlay.value = true
-                // onBatchInputComplete 内部会自动设置 isProcessing 并更新 batchProgress
-                validation.onBatchInputComplete(Array.from(changedRows), Array.from(changedCols))
-                // 监听 isProcessing 变化来隐藏遮罩
+                const rowsArr = Array.from(changedRows)
+                const colsArr = Array.from(changedCols)
+                const minCol = Math.min(...colsArr)
+                const maxCol = Math.max(...colsArr)
+                validation.handleBulkEdit(rowsArr, { startCol: minCol, endCol: maxCol }, rowsArr, colsArr, editValue)
                 watchProcessingState()
               }
               lastEditedCell = null
