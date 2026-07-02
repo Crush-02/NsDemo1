@@ -29,7 +29,7 @@ const emit = defineEmits<{
   (e: 'export'): void
 }>()
 
-const props = defineProps<{ title?: string; colCount?: number }>()
+const props = defineProps<{ title?: string; colCount?: number; headerRowIndex?: number }>()
 
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
@@ -43,7 +43,7 @@ async function onFileChange(event: Event) {
   if (!file) return
 
   try {
-    const result = await readExcelFile(file, props.colCount || undefined)
+    const result = await readExcelFile(file, props.colCount || undefined, props.headerRowIndex ?? 0)
     emit('import', result)
     ElMessage.success(`导入成功，共${result.rows.length}行数据`)
   } catch (err: any) {

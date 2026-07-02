@@ -59,21 +59,7 @@ function validateProjectName(row: number): ValidationResult | null {
   return null
 }
 
-/** 规则: 楼栋名称_必填 */
-function validateBuildingName(row: number): ValidationResult | null {
-  const val = getCellText(row, 2)
-  if (val === '') {
-    return {
-      isValid: false,
-      ruleId: '楼栋名称_必填',
-      severity: 'CRITICAL',
-      message: '楼栋名称不可为空',
-      row,
-      col: 2,
-    }
-  }
-  return null
-}
+/** 规则: 楼栋名称_必填 — 已移除，楼栋名称改为非必填 */
 
 /** 规则1: 房产简称_必填 - 不可为空 */
 function validatePropertyName(row: number): ValidationResult | null {
@@ -91,8 +77,8 @@ function validatePropertyName(row: number): ValidationResult | null {
   return null
 }
 
-/** 规则6: 楼层_必填 - 不可为空且必须为正整数 */
-const FLOOR_REGEX = /^[1-9]\d*$/
+/** 规则6: 楼层_必填 - 不可为空，允许负整数（地下室），禁止0 */
+const FLOOR_REGEX = /^-?[1-9]\d*$/
 
 function validateFloor(row: number): ValidationResult | null {
   const val = getCellText(row, 4)
@@ -101,7 +87,7 @@ function validateFloor(row: number): ValidationResult | null {
       isValid: false,
       ruleId: '楼层_必填',
       severity: 'CRITICAL',
-      message: '楼层不可为空且必须为正整数',
+      message: '楼层不可为空且必须为非零整数（负整数表示地下室）',
       row,
       col: 4,
     }
@@ -111,7 +97,7 @@ function validateFloor(row: number): ValidationResult | null {
       isValid: false,
       ruleId: '楼层_必填',
       severity: 'CRITICAL',
-      message: '楼层不可为空且必须为正整数',
+      message: '楼层不可为空且必须为非零整数（负整数表示地下室）',
       row,
       col: 4,
     }
@@ -377,7 +363,6 @@ export function validateCell(row: number, col: number): ValidationResult | null 
 
   // 必填规则
   if (col === 0) return validateProjectName(row)
-  if (col === 2) return validateBuildingName(row)
   if (col === 5) return validateRoomNo(row)
   if (col === 6) return validatePropertyName(row)
 
@@ -423,9 +408,6 @@ export function validateRow(row: number): ValidationResult[] {
   // 必填规则
   const rProject = validateProjectName(row)
   if (rProject) results.push(rProject)
-
-  const rBuilding = validateBuildingName(row)
-  if (rBuilding) results.push(rBuilding)
 
   const r1 = validatePropertyName(row)
   if (r1) results.push(r1)

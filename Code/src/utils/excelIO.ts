@@ -21,8 +21,15 @@ export interface ColumnMappingResult {
 
 /**
  * 读取Excel文件，返回表头和数据行
+ * @param file Excel文件
+ * @param maxCols 最大列数，默认取房产模块的32列
+ * @param headerRowIndex 表头所在行索引（0-based），默认0即第一行。设为3可跳过前3行模板提示行
  */
-export function readExcelFile(file: File, maxCols?: number): Promise<ExcelReadResult> {
+export function readExcelFile(
+  file: File,
+  maxCols?: number,
+  headerRowIndex: number = 0
+): Promise<ExcelReadResult> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = (e) => {
@@ -43,14 +50,14 @@ export function readExcelFile(file: File, maxCols?: number): Promise<ExcelReadRe
           return
         }
 
-        // 第1行为表头
-        const headerRow = rows[0] as any[]
+        // 从指定行读取表头（0-based），跳过之前的模板提示行
+        const headerRow = rows[headerRowIndex] as any[]
         const headers = headerRow.map((v: any) =>
           v === null || v === undefined ? '' : String(v).trim()
         )
 
-        // 数据行从第2行开始
-        const dataRows = rows.slice(1)
+        // 数据行从表头行的下一行开始
+        const dataRows = rows.slice(headerRowIndex + 1)
         const maxCol = maxCols ?? HEADER_COLUMNS.length
 
         const normalized = dataRows.map((row: any[]) => {

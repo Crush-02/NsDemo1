@@ -24,7 +24,7 @@
 
   <!-- 编辑器：应收已收数据导入 -->
   <div v-else-if="currentView === 'finance'" class="app-container">
-    <Toolbar title="应收、已收数据导入 - 在线填表工具" :col-count="18" @import="onFinanceImport" @export="onFinanceExport">
+    <Toolbar title="应收、已收数据导入 - 在线填表工具" :col-count="18" :header-row-index="3" @import="onFinanceImport" @export="onFinanceExport">
       <template #extra>
         <el-button size="small" @click="backToHome">← 返回首页</el-button>
         <el-button size="small" @click="showFinancePanel = !showFinancePanel">
