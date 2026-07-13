@@ -1,0 +1,39 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: Q0DeR-MaG1C-BrAnCh-Fo2-NoN-GiT-Or-No-C0MmIt
+exported_at: "2026-06-11T07:09:52Z"
+modules:
+    "":
+        dir_name: 物业数据智能校验与编辑系统
+        title: 物业数据智能校验与编辑系统
+        scope:
+            - index.html
+            - package.json
+            - tsconfig.json
+            - tsconfig.node.json
+            - vite.config.ts
+            - 启动工具.bat
+            - src/
+            - package-lock.json
+            - src\App.vue
+            - src\components\CellTooltip.vue
+            - src\components\TableEditor.vue
+            - src\components\Toolbar.vue
+            - src\components\ValidationBar.vue
+            - src\components\ValidationPanel.vue
+            - src\engine\conditionalValidator.ts
+            - src\engine\crossRowValidator.ts
+            - src\engine\dependencyTracker.ts
+            - src\engine\simpleValidator.ts
+            - src\engine\types.ts
+            - src\engine\validationStore.ts
+            - src\main.ts
+            - src\types\index.ts
+            - src\utils\autoSave.ts
+            - src\utils\excelIO.ts
+            - src\vite-env.d.ts
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
