@@ -110,7 +110,7 @@ export function validateDataDuplicate(): ValidationResult[] {
     const start = getCellText(r, 5)    // 计费开始日期
     const end = getCellText(r, 6)      // 计费结束日期
 
-    if (prop === '' || subject === '') continue
+    if (prop === '' || subject === '' || start === '' || end === '') continue
 
     // 标准化日期用于比较
     const startNorm = isValidDateStr(start) ? normalizeDate(start) : start

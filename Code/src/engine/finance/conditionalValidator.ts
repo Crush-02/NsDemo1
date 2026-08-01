@@ -76,7 +76,7 @@ function validatePaymentTriple(row: number): ValidationResult[] {
   return results
 }
 
-/** 规则6: 缴款金额 ≤ 应收金额 */
+/** 规则6: 缴款金额 ≤ 实际应收金额（实际应收 = 应收金额 - 减免金额） */
 function validatePaymentAmountLimit(row: number): ValidationResult | null {
   const payStr = getCellText(row, 13)
   if (payStr === '') return null
@@ -87,12 +87,28 @@ function validatePaymentAmountLimit(row: number): ValidationResult | null {
   const recv = parseFloat(recvStr)
   if (isNaN(pay) || isNaN(recv)) return null
 
-  if (pay > recv) {
+  // 减免金额：有值则扣减，非数字按 0 处理
+  const exemptStr = getCellText(row, 9)
+  let exempt = 0
+  if (exemptStr !== '') {
+    exempt = parseFloat(exemptStr)
+    if (isNaN(exempt)) exempt = 0
+  }
+  // 四舍五入到分，避免浮点精度误差（如 0.1 + 0.2）
+  const actualRecv = Math.round((recv - exempt) * 100) / 100
+
+  // 减免超过应收时实际应收为负，缴款上限钳制为 0（不应再缴款），避免误报缴款=0 的合法行
+  const limit = Math.max(actualRecv, 0)
+  if (pay > limit) {
     return {
       isValid: false,
       ruleId: '缴款金额上限',
       severity: 'CRITICAL',
-      message: `缴款金额(${payStr})不能大于应收金额(${recvStr})`,
+      message: exempt > 0
+        ? (actualRecv > 0
+            ? `缴款金额(${payStr})不能大于实际应收金额(应收${recvStr} - 减免${exemptStr})`
+            : `减免金额(${exemptStr})已超过应收金额(${recvStr})，不应再缴款（当前缴款${payStr}）`)
+        : `缴款金额(${payStr})不能大于应收金额(${recvStr})`,
       row, col: 13,
     }
   }

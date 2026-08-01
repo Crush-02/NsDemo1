@@ -14,20 +14,28 @@ function getLs(): any {
   return (window as any).luckysheet
 }
 
-/** 获取单元格文本值（空值安全，处理日期序列号） */
+/** flowdata 缓存引用（避免高频 getCellText 反复调用 getSheetData 拖慢全量校验） */
+let cachedFlowdata: any[][] | null = null
+
+/** 刷新 flowdata 缓存（initLuckysheet 后 / sheet 切换后调用） */
+export function refreshFlowdataCache() {
+  cachedFlowdata = null
+}
+
+/** 获取单元格文本值（空值安全；仅对日期类型单元格做序列号转换） */
 export function getCellText(row: number, col: number): string {
-  const ls = getLs()
-  if (!ls) return ''
-  const val = ls.getCellValue(row, col)
-  if (val === null || val === undefined) return ''
-  if (typeof val === 'number') {
-    if (val > 40000 && val < 100000) {
-      const date = new Date((val - 25569) * 86400 * 1000)
-      const y = date.getFullYear()
-      const m = String(date.getMonth() + 1).padStart(2, '0')
-      const d = String(date.getDate()).padStart(2, '0')
-      return `${y}-${m}-${d}`
-    }
+  const data = getFlowdata()
+  if (!data || !data[row] || !data[row][col]) return ''
+  const cell = data[row][col]
+  const val = cell.v
+  if (val === null || val === undefined || val === '') return ''
+  // 仅当单元格类型为日期时，才把 Excel 序列号转为 YYYY-MM-DD
+  if (typeof val === 'number' && cell.ct && cell.ct.t === 'd') {
+    const date = new Date((val - 25569) * 86400 * 1000)
+    const y = date.getFullYear()
+    const m = String(date.getMonth() + 1).padStart(2, '0')
+    const d = String(date.getDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
   }
   return String(val).trim()
 }
@@ -40,13 +48,14 @@ export function isRowNotEmpty(row: number): boolean {
   return false
 }
 
-/** 获取flowdata */
+/** 获取flowdata（带缓存引用；编辑时Luckysheet原地修改→缓存自动同步，无需手动失效） */
 function getFlowdata(): any[][] | null {
+  if (cachedFlowdata) return cachedFlowdata
   const ls = getLs()
   if (!ls) return null
-  if (typeof ls.getSheetData === 'function') return ls.getSheetData()
-  if (typeof ls.flowdata === 'function') return ls.flowdata()
-  return null
+  if (typeof ls.getSheetData === 'function') cachedFlowdata = ls.getSheetData()
+  else if (typeof ls.flowdata === 'function') cachedFlowdata = ls.flowdata()
+  return cachedFlowdata
 }
 
 // ==================== 日期校验 ====================

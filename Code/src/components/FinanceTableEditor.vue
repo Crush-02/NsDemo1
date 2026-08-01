@@ -8,7 +8,7 @@
     </div>
     <CellTooltip ref="cellTooltipRef" />
     <!-- 校验遮罩层 -->
-    <div v-if="showValidationOverlay" class="validation-overlay">
+    <div v-if="showValidationOverlay || validation.state.validationProgress.isRunning" class="validation-overlay">
       <div class="validation-overlay-card">
         <div class="validation-spinner"></div>
         <div class="validation-overlay-text">数据校验进行中，请稍等</div>
@@ -35,6 +35,7 @@ import { getCurrentCelldata, saveToLocal, loadFromLocal, formatTimestamp } from 
 import { buildColumnMapping, remapRows, type ExcelReadResult } from '../utils/excelIO'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import { useFinanceValidationStore } from '../engine/finance/validationStore'
+import { refreshFlowdataCache } from '../engine/finance/simpleValidator'
 import CellTooltip from './CellTooltip.vue'
 import ExcelJS from 'exceljs'
 import { saveAs } from 'file-saver'
@@ -535,6 +536,8 @@ function buildColumnLen(): Record<number, number> {
 
 /** 初始化Luckysheet */
 function initLuckysheet(extraCelldata?: CellData[]) {
+  // sheet 重建前清空 flowdata 缓存，避免 getCellText 仍指向旧数据
+  refreshFlowdataCache()
   const luckysheet = (window as any).luckysheet
   if (!luckysheet) {
     console.error('Luckysheet未加载，请检查CDN引入')
