@@ -7,7 +7,7 @@
     <Toolbar title="房产信息数据导入 - 在线填表工具" @import="onPropertyImport" @export="onPropertyExport">
       <template #extra>
         <el-button size="small" @click="backToHome">← 返回首页</el-button>
-        <el-button size="small" @click="showPanel = !showPanel">
+        <el-button class="validate-btn" size="default" @click="showPanel = !showPanel">
           {{ showPanel ? '隐藏面板' : '校验面板' }}
         </el-button>
       </template>
@@ -27,7 +27,7 @@
     <Toolbar title="应收、已收数据导入 - 在线填表工具" :col-count="18" :header-row-index="3" @import="onFinanceImport" @export="onFinanceExport">
       <template #extra>
         <el-button size="small" @click="backToHome">← 返回首页</el-button>
-        <el-button size="small" @click="showFinancePanel = !showFinancePanel">
+        <el-button class="validate-btn" size="default" @click="showFinancePanel = !showFinancePanel">
           {{ showFinancePanel ? '隐藏面板' : '校验面板' }}
         </el-button>
       </template>
@@ -254,5 +254,24 @@ html, body, #app {
 
 .sync-scrollbar-content {
   width: 1px;
+}
+
+/* 校验面板切换按钮 & 校验主操作按钮：亮橙背景 */
+.validate-btn.el-button {
+  background-color: rgb(255, 115, 0);
+  border-color: rgb(255, 115, 0);
+  color: #ffffff;
+}
+.validate-btn.el-button:hover,
+.validate-btn.el-button:focus {
+  background-color: rgb(230, 100, 0);
+  border-color: rgb(230, 100, 0);
+  color: #ffffff;
+}
+.validate-btn.el-button.is-loading,
+.validate-btn.el-button:disabled {
+  background-color: rgb(255, 115, 0);
+  border-color: rgb(255, 115, 0);
+  color: #ffffff;
 }
 </style>

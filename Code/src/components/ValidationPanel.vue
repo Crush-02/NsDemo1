@@ -88,7 +88,8 @@
       <!-- 底部操作 -->
       <div class="panel-footer">
         <el-button
-          size="small"
+          class="validate-btn"
+          size="default"
           :loading="schedulerProgress.isRunning"
           @click="refreshValidation"
         >
@@ -467,5 +468,23 @@ function refreshValidation() {
 .slide-enter-from,
 .slide-leave-to {
   transform: translateX(100%);
+}
+/* 校验面板主操作按钮：亮橙背景 */
+.validate-btn.el-button {
+  background-color: rgb(255, 115, 0);
+  border-color: rgb(255, 115, 0);
+  color: #ffffff;
+}
+.validate-btn.el-button:hover,
+.validate-btn.el-button:focus {
+  background-color: rgb(230, 100, 0);
+  border-color: rgb(230, 100, 0);
+  color: #ffffff;
+}
+.validate-btn.el-button.is-loading,
+.validate-btn.el-button:disabled {
+  background-color: rgb(255, 115, 0);
+  border-color: rgb(255, 115, 0);
+  color: #ffffff;
 }
 </style>
