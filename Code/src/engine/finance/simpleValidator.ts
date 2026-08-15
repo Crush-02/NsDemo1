@@ -17,7 +17,7 @@ function getLs(): any {
 /** flowdata 缓存引用（避免高频 getCellText 反复调用 getSheetData 拖慢全量校验） */
 let cachedFlowdata: any[][] | null = null
 
-/** 刷新 flowdata 缓存（initLuckysheet 后 / sheet 切换后调用） */
+/** 刷新 flowdata 缓存（全量校验前调用，确保缓存指向最新的 sheet 数据） */
 export function refreshFlowdataCache() {
   cachedFlowdata = null
 }
@@ -48,7 +48,7 @@ export function isRowNotEmpty(row: number): boolean {
   return false
 }
 
-/** 获取flowdata（带缓存引用；编辑时Luckysheet原地修改→缓存自动同步，无需手动失效） */
+/** 获取flowdata（带缓存；编辑时Luckysheet原地修改→缓存自动同步；数据重建后由 refreshFlowdataCache 在 startValidation 入口刷新） */
 function getFlowdata(): any[][] | null {
   if (cachedFlowdata) return cachedFlowdata
   const ls = getLs()

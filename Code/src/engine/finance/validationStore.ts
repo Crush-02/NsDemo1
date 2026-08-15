@@ -8,6 +8,7 @@ import { sanitizeMessage, FINANCE_CROSS_ROW_RULE_IDS } from '../types'
 import {
   validateCell, validateRow, validateAll,
   getFilledRowCount, getTotalRowCount,
+  refreshFlowdataCache,
 } from './simpleValidator'
 import { validateConditionalRow, validateConditionalAll } from './conditionalValidator'
 import { validateAllCrossRow, validateCrossRowByCol } from './crossRowValidator'
@@ -757,6 +758,8 @@ export function onCellBlur(row: number, col: number) {
   blurDebounceTimer = window.setTimeout(() => {
     blurDebounceTimer = null
     const items = pendingBlurs.splice(0)
+    // 失焦校验前刷新 flowdata 缓存，确保读到最新数据
+    refreshFlowdataCache()
     for (const { row: r, col: c } of items) {
       executeBlurValidation(r, c)
     }
@@ -853,19 +856,26 @@ function scheduleCrossRowValidation(col: number) {
 
 function executeCrossRowValidation(col: number) {
   const crossRowResults = validateCrossRowByCol(col)
-  if (!crossRowResults.length) {
-    // 即使没有新结果，也需要清除旧的跨行结果
-    clearCrossRowResultsForCol(col)
-    markStatsDirty()
-    flushStyleBatchSync()
-    return
-  }
 
-  clearCrossRowResultsForCol(col)
+  // 清除旧的跨行结果，返回被清除的单元格key列表
+  const clearedKeys = clearCrossRowResultsForCol(col)
+
+  // 写入新的跨行结果
+  const newResultKeys = new Set<string>()
   for (const r of crossRowResults) {
     appendCellResult(r.row, r.col, r)
+    newResultKeys.add(cellKey(r.row, r.col))
     applyCellStyle(r.row, r.col, getWorstResult(r.row, r.col), false)
   }
+
+  // 【修复】被清除旧跨行结果、且未重新出现跨行错误的单元格，恢复其样式
+  for (const key of clearedKeys) {
+    if (newResultKeys.has(key)) continue
+    const [rs, cs] = key.split('-')
+    const row = Number(rs), col = Number(cs)
+    applyCellStyle(row, col, getWorstResult(row, col), false)
+  }
+
   markStatsDirty()
   flushStyleBatchSync()
 }
@@ -879,9 +889,9 @@ function getWorstResult(row: number, col: number): ValidationResult | null {
   return results.reduce((a, b) => o[a.severity] <= o[b.severity] ? a : b)
 }
 
-function clearCrossRowResultsForCol(col: number) {
+function clearCrossRowResultsForCol(col: number): string[] {
   const ruleIds = CROSS_ROW_COL_MAP[col]
-  if (!ruleIds) return
+  if (!ruleIds) return []
 
   const keysToDelete: string[] = []
   financeState.results.forEach((results, key) => {
@@ -890,6 +900,7 @@ function clearCrossRowResultsForCol(col: number) {
     else financeState.results.set(key, filtered)
   })
   for (const k of keysToDelete) financeState.results.delete(k)
+  return keysToDelete
 }
 
 function updatePendingState(row: number, col: number) {
@@ -1003,6 +1014,8 @@ const financeScheduler = new ValidationScheduler({
 
 /** 启动分步校验（导入后/手动重新校验） */
 export function startValidation(): Promise<{ errors: ValidationResult[]; warnings: ValidationResult[] }> {
+  // 全量校验前刷新 flowdata 缓存，确保缓存指向数据重建后的最新 sheet 数据
+  refreshFlowdataCache()
   return financeScheduler.run()
 }
 

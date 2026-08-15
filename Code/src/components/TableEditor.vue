@@ -34,7 +34,6 @@ import { getCurrentCelldata, saveToLocal, loadFromLocal, formatTimestamp } from 
 import { buildColumnMapping, remapRows, type ExcelReadResult } from '../utils/excelIO'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import { useValidationStore } from '../engine/validationStore'
-import { refreshFlowdataCache } from '../engine/simpleValidator'
 import CellTooltip from './CellTooltip.vue'
 
 const cellTooltipRef = ref<InstanceType<typeof CellTooltip> | null>(null)
@@ -538,8 +537,6 @@ function buildColumnLen(): Record<number, number> {
 
 /** 初始化Luckysheet */
 function initLuckysheet(extraCelldata?: CellData[]) {
-  // sheet 重建前清空 flowdata 缓存，避免 getCellText 仍指向旧数据
-  refreshFlowdataCache()
   const luckysheet = (window as any).luckysheet
   if (!luckysheet) {
     console.error('Luckysheet未加载，请检查CDN引入')

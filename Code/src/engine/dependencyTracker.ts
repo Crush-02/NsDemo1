@@ -40,6 +40,24 @@ const DEPENDENCY_RULES: DependencyRule[] = [
     targetCols: [29, 23],         // 租户证件类型、出租开始日期
     description: '因租户信息已填写，此项变为必填',
   },
+  // 有租户信息 → 出租结束日期必填
+  {
+    sourceCols: [26, 27, 30, 23], // 租户客户名称、租户联系电话、租户证件号码、出租开始日期
+    targetCols: [24],             // 出租结束日期
+    description: '因租户信息已填写，出租结束日期必填',
+  },
+  // 出租开始日期填写 → 租户客户名称必填
+  {
+    sourceCols: [23],       // 出租开始日期
+    targetCols: [26],       // 租户客户名称
+    description: '出租日期已填写，租户客户名称必填',
+  },
+  // 租户联系电话填写 → 租户客户名称必填
+  {
+    sourceCols: [27],       // 租户联系电话
+    targetCols: [26],       // 租户客户名称
+    description: '租户联系电话已填写，租户客户名称必填',
+  },
   // 租户证件类型有值 → 租户证件号码必填
   {
     sourceCols: [29],       // 租户证件类型

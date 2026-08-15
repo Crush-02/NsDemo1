@@ -4,6 +4,7 @@ import { sanitizeMessage, PROPERTY_CROSS_ROW_RULE_IDS } from './types'
 import {
   validateCell, validateRow, validateAll,
   getFilledRowCount, getTotalRowCount,
+  refreshFlowdataCache,
 } from './simpleValidator'
 import { validateConditionalRow, validateConditionalAll } from './conditionalValidator'
 import { validateAllCrossRow, validateCrossRowByCol } from './crossRowValidator'
@@ -805,6 +806,8 @@ export function onCellBlur(row: number, col: number) {
     blurDebounceTimer = null
     const blurs = pendingBlurs.slice()
     pendingBlurs = []
+    // 失焦校验前刷新 flowdata 缓存，确保读到最新数据
+    refreshFlowdataCache()
     // 收集所有需要跨行校验的列
     const crossRowCols = new Set<number>()
     for (const { row: r, col: c } of blurs) {
@@ -928,19 +931,26 @@ function executeCrossRowValidation(cols: number[]) {
     if (ruleIds) ruleIds.forEach(id => allRuleIds.add(id))
   }
 
-  // 清除所有相关列的旧跨行结果
-  clearCrossRowResultsForRuleIds(Array.from(allRuleIds))
+  // 清除所有相关列的旧跨行结果，返回被清除的单元格key列表
+  const clearedKeys = clearCrossRowResultsForRuleIds(Array.from(allRuleIds))
 
-  if (!allCrossRowResults.length) {
-    markStatsDirty()
-    flushStyleBatchSync()
-    return
-  }
-
+  // 写入新的跨行结果
+  const newResultKeys = new Set<string>()
   for (const r of allCrossRowResults) {
     appendCellResult(r.row, r.col, r)
+    newResultKeys.add(cellKey(r.row, r.col))
     applyCellStyle(r.row, r.col, getWorstResult(r.row, r.col), false)
   }
+
+  // 【修复】被清除旧跨行结果、且未重新出现跨行错误的单元格，恢复其样式
+  // （可能仍存在简单/条件错误 → 保持错误样式；否则恢复默认）
+  for (const key of clearedKeys) {
+    if (newResultKeys.has(key)) continue
+    const [rs, cs] = key.split('-')
+    const row = Number(rs), col = Number(cs)
+    applyCellStyle(row, col, getWorstResult(row, col), false)
+  }
+
   markStatsDirty()
   flushStyleBatchSync()
 }
@@ -954,15 +964,9 @@ function getWorstResult(row: number, col: number): ValidationResult | null {
   return results.reduce((a, b) => o[a.severity] <= o[b.severity] ? a : b)
 }
 
-function clearCrossRowResultsForCol(col: number) {
-  const ruleIds = CROSS_ROW_COL_MAP[col]
-  if (!ruleIds) return
-  clearCrossRowResultsForRuleIds(ruleIds)
-}
-
-/** 根据ruleId列表清除跨行校验结果 */
-function clearCrossRowResultsForRuleIds(ruleIds: string[]) {
-  if (!ruleIds.length) return
+/** 根据ruleId列表清除跨行校验结果，返回被清除的单元格key列表 */
+function clearCrossRowResultsForRuleIds(ruleIds: string[]): string[] {
+  if (!ruleIds.length) return []
 
   const keysToDelete: string[] = []
   state.results.forEach((results, key) => {
@@ -971,6 +975,7 @@ function clearCrossRowResultsForRuleIds(ruleIds: string[]) {
     else state.results.set(key, filtered)
   })
   for (const k of keysToDelete) state.results.delete(k)
+  return keysToDelete
 }
 
 function updatePendingState(row: number, col: number) {
@@ -1083,6 +1088,8 @@ const scheduler = new ValidationScheduler({
 
 /** 启动分步校验（导入后/手动重新校验） */
 export function startValidation(): Promise<{ errors: ValidationResult[]; warnings: ValidationResult[] }> {
+  // 全量校验前刷新 flowdata 缓存，确保缓存指向数据重建后的最新 sheet 数据
+  refreshFlowdataCache()
   return scheduler.run()
 }
 
