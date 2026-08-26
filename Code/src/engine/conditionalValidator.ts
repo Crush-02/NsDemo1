@@ -42,7 +42,7 @@ function validateSaleDateOwner(row: number): ValidationResult | null {
   return {
     isValid: false,
     ruleId: '售楼日期_必填_业主',
-    severity: 'HIGH',
+    severity: 'CRITICAL',
     message: '业主客户信息填写时，售楼时间必填',
     row,
     col: 12,
@@ -56,7 +56,7 @@ function validateOwnerCustType(row: number): ValidationResult | null {
   return {
     isValid: false,
     ruleId: '业主客户类型_必填',
-    severity: 'HIGH',
+    severity: 'CRITICAL',
     message: '业主的客户信息填写时，业主客户类型必填（个人 或 企业）',
     row,
     col: 15,
@@ -70,7 +70,7 @@ function validateSaleDateReceive(row: number): ValidationResult | null {
   return {
     isValid: false,
     ruleId: '售楼日期_必填_收房',
-    severity: 'HIGH',
+    severity: 'CRITICAL',
     message: '收房日期填写时，售楼日期必填',
     row,
     col: 12,
@@ -84,7 +84,7 @@ function validateSaleDateMoveIn(row: number): ValidationResult | null {
   return {
     isValid: false,
     ruleId: '售楼日期_必填_入住',
-    severity: 'HIGH',
+    severity: 'CRITICAL',
     message: '入住日期填写时，售楼日期必填',
     row,
     col: 12,
@@ -98,7 +98,7 @@ function validateTenantNameOnRent(row: number): ValidationResult | null {
   return {
     isValid: false,
     ruleId: '租户客户名称_必填',
-    severity: 'MEDIUM',
+    severity: 'CRITICAL',
     message: '出租日期填写时，租户客户名称必填',
     row,
     col: 26,
@@ -112,7 +112,7 @@ function validateTenantNameOnPhone(row: number): ValidationResult | null {
   return {
     isValid: false,
     ruleId: '租户客户名称_必填',
-    severity: 'MEDIUM',
+    severity: 'CRITICAL',
     message: '租户联系电话填写时，租户客户名称必填',
     row,
     col: 26,
@@ -126,7 +126,7 @@ function validateRentStartDate(row: number): ValidationResult | null {
   return {
     isValid: false,
     ruleId: '出租开始日期_必填',
-    severity: 'MEDIUM',
+    severity: 'CRITICAL',
     message: '租户的信息填写时，出租日期必填',
     row,
     col: 23,
@@ -140,7 +140,7 @@ function validateRentEndDate(row: number): ValidationResult | null {
   return {
     isValid: false,
     ruleId: '出租结束日期_必填',
-    severity: 'MEDIUM',
+    severity: 'CRITICAL',
     message: '租户的信息填写时，出租结束日期必填',
     row,
     col: 24,
@@ -154,7 +154,7 @@ function validateTenantContact(row: number): ValidationResult | null {
   return {
     isValid: false,
     ruleId: '租户企业联系人_必填',
-    severity: 'MEDIUM',
+    severity: 'CRITICAL',
     message: '租户客户类型为企业时，租户企业联系人必填',
     row,
     col: 28,
@@ -168,7 +168,7 @@ function validateOwnerContact(row: number): ValidationResult | null {
   return {
     isValid: false,
     ruleId: '企业联系人_必填',
-    severity: 'MEDIUM',
+    severity: 'CRITICAL',
     message: '业主客户类型为企业时，企业联系人必填',
     row,
     col: 21,
@@ -184,7 +184,7 @@ function validateOwnerIdNoRequired(row: number): ValidationResult | null {
   return {
     isValid: false,
     ruleId: '业主证件号码_必填',
-    severity: 'HIGH',
+    severity: 'CRITICAL',
     message: '业主证件类型已填写时，业主证件号码必填',
     row,
     col: 20,
@@ -200,7 +200,7 @@ function validateTenantIdNoRequired(row: number): ValidationResult | null {
   return {
     isValid: false,
     ruleId: '租户证件号码_必填',
-    severity: 'HIGH',
+    severity: 'CRITICAL',
     message: '租户证件类型已填写时，租户证件号码必填',
     row,
     col: 30,
@@ -216,10 +216,24 @@ function validateOwnerTypeRequired(row: number): ValidationResult | null {
   return {
     isValid: false,
     ruleId: '业主类型_必填',
-    severity: 'HIGH',
+    severity: 'CRITICAL',
     message: '业主客户类型已填写时，业主类型必填（业主 或 共有产权人）',
     row,
     col: 17,
+  }
+}
+
+/** 规则: 单元名称有值时，楼栋名称必填 */
+function validateBuildingNameRequired(row: number): ValidationResult | null {
+  if (getCellText(row, 3) === '') return null  // 单元名称无值，不触发
+  if (getCellText(row, 2) !== '') return null  // 楼栋名称已有值
+  return {
+    isValid: false,
+    ruleId: '楼栋名称_必填',
+    severity: 'CRITICAL',
+    message: '单元名称已填写时，楼栋名称必填',
+    row,
+    col: 2,
   }
 }
 
@@ -272,6 +286,9 @@ export function validateConditionalRow(row: number): ValidationResult[] {
 
   const r_owner_type = validateOwnerTypeRequired(row)
   if (r_owner_type) results.push(r_owner_type)
+
+  const r_building_name = validateBuildingNameRequired(row)
+  if (r_building_name) results.push(r_building_name)
 
   return results
 }

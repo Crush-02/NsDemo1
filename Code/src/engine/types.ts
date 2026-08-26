@@ -51,6 +51,7 @@ export function sanitizeMessage(msg: string): string {
 /** 房产信息模块 - 跨行校验规则ID */
 export const PROPERTY_CROSS_ROW_RULE_IDS = [
   '房产简称_唯一性',
+  '定位字段值重复',
   '客户信息一致性',
   '日期顺序',
   '业主证件号码_一致性',

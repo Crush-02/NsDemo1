@@ -94,6 +94,12 @@ const DEPENDENCY_RULES: DependencyRule[] = [
     targetCols: [17],       // 业主类型
     description: '业主客户类型已填写，业主类型必填',
   },
+  // 单元名称有值 → 楼栋名称必填
+  {
+    sourceCols: [3],        // 单元名称
+    targetCols: [2],        // 楼栋名称
+    description: '单元名称已填写，楼栋名称必填',
+  },
 ]
 
 /** 源列 → 依赖规则的反向索引 */

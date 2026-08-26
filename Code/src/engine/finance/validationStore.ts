@@ -940,6 +940,70 @@ export function getAllCellErrors(): CellError[] {
 
 // ==================== 分步校验调度器 ====================
 
+/**
+ * 清除上一轮所有「错误/待填写」单元格的样式
+ * 直接修改 flowdata 的 cell.bd/cell.bg + 过滤 sheet.config.borderInfo
+ * （Luckysheet 实际渲染边框用 borderInfo，applyCellStyle 通过 setCellFormat 写入）
+ * 只遍历上一轮有错误/待填写的 key，O(错误数 + 边框数)
+ */
+function clearPreviousStyles() {
+  const ls = (window as any).luckysheet
+  if (!ls) return
+  const flowdata = typeof ls.flowdata === 'function' ? ls.flowdata() : null
+
+  const keysToClear = new Set<string>()
+  financeState.results.forEach((_, key) => keysToClear.add(key))
+  financeState.pendingCells.forEach((key) => keysToClear.add(key))
+  if (keysToClear.size === 0) return
+
+  // 转 row,col 集合，便于范围匹配
+  const cellsToClear = new Set<string>()
+  for (const key of keysToClear) {
+    const [rs, cs] = key.split('-')
+    cellsToClear.add(`${rs},${cs}`)
+  }
+
+  // 过滤 sheet.config.borderInfo：移除包含 cellsToClear 的「错误/警告」边框
+  // 保留默认边框（style: '1'）和合并单元格（rangeType: 'cell'）
+  const sheetIndex = ls.getCurrentSheetIndex?.() ?? 0
+  const sheet = ls.getluckysheetfile?.()?.[sheetIndex]
+  if (sheet?.config?.borderInfo) {
+    sheet.config.borderInfo = sheet.config.borderInfo.filter((b: any) => {
+      if (b.style === '1') return true
+      if (b.rangeType !== 'range') return true
+      if (Array.isArray(b.range)) {
+        for (const r of b.range) {
+          if (!r.row || !r.column) continue
+          const r1 = r.row[0], r2 = r.row[1], c1 = r.column[0], c2 = r.column[1]
+          for (let rr = r1; rr <= r2; rr++) {
+            for (let cc = c1; cc <= c2; cc++) {
+              if (cellsToClear.has(`${rr},${cc}`)) return false
+            }
+          }
+        }
+      }
+      return true
+    })
+  }
+
+  // 同步修改 flowdata（项目代码的声明式）
+  if (flowdata) {
+    for (const key of keysToClear) {
+      const [rs, cs] = key.split('-')
+      const row = Number(rs), col = Number(cs)
+      if (!flowdata[row] || !flowdata[row][col]) continue
+      const cell = flowdata[row][col]
+      if (cell.bd) delete cell.bd
+      if (cell.bg) cell.bg = '#ffffff'
+    }
+  }
+
+  // 立即刷新画布（让 borderInfo 的删除生效）
+  if (typeof ls.jfrefreshgrid === 'function') {
+    ls.jfrefreshgrid()
+  }
+}
+
 const financeScheduler = new ValidationScheduler({
   headerRowCount: FINANCE_HEADER_ROW_COUNT,
   batchSize: 50,
@@ -957,6 +1021,8 @@ const financeScheduler = new ValidationScheduler({
     return validateAllCrossRow()
   },
   clearAllResults() {
+    // 先清除上一轮所有错误/待填写单元格的样式，再清空结果
+    clearPreviousStyles()
     financeState.results.clear()
     financeState.pendingCells.clear()
   },
@@ -1016,12 +1082,19 @@ const financeScheduler = new ValidationScheduler({
 export function startValidation(): Promise<{ errors: ValidationResult[]; warnings: ValidationResult[] }> {
   // 全量校验前刷新 flowdata 缓存，确保缓存指向数据重建后的最新 sheet 数据
   refreshFlowdataCache()
-  return financeScheduler.run()
+  return financeScheduler.run().then((result) => {
+    // 校验完成后统一刷新样式（清除旧错误样式 + 应用新错误样式）
+    applyAllStylesFromResults()
+    return result
+  })
 }
 
 /** 等待校验完成（导出场景使用） */
 export function waitForValidation(): Promise<{ errors: ValidationResult[]; warnings: ValidationResult[] }> {
-  return financeScheduler.waitForCompletion()
+  return financeScheduler.waitForCompletion().then((result) => {
+    applyAllStylesFromResults()
+    return result
+  })
 }
 
 /** 取消当前校验 */
@@ -1064,9 +1137,8 @@ export function applyAllStylesFromResults() {
     styleMap.set(key, { bd: { borderType: 'border-all', style: '3', color: '#E6A23C' }, bg: '#FDF6EC' })
   })
 
-  if (!styleMap.size) return
-
   // 直接修改flowdata中的单元格对象
+  // 注意：即使 styleMap 为空也要继续到 jfrefreshgrid，因为 clearPreviousStyles 已删除旧样式、需要刷新画布生效
   const flowdata = typeof ls.flowdata === 'function' ? ls.flowdata() : null
   if (!flowdata) {
     applyAllValidationStyles()

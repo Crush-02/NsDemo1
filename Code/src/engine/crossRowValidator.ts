@@ -53,6 +53,58 @@ export function validatePropertyNameUniqueness(): ValidationResult[] {
 }
 
 /**
+ * 规则: 定位字段值重复（跨行去重）
+ * 楼层+房号为必选门槛；管理区域名称/楼栋名称/单元名称有值才参与
+ * 参与校验的「有值字段组合」不能与其他行完全相同，重复时在房号列(col=5)报红色错误
+ */
+export function validateLocationDuplicate(): ValidationResult[] {
+  const flowdata = getFlowdata()
+  if (!flowdata) return []
+
+  // 组合key → 出现的行号列表
+  const comboToRows = new Map<string, number[]>()
+
+  for (let r = 1; r < flowdata.length; r++) {
+    if (!isRowNotEmpty(r)) continue
+
+    // 必选门槛：楼层(4) 和 房号(5) 必须有值
+    const floor = getCellText(r, 4)
+    const roomNo = getCellText(r, 5)
+    if (floor === '' || roomNo === '') continue
+
+    // 动态组合 key：按列顺序，有值字段以「列号:值」拼接，保留字段位置避免歧义
+    const parts: string[] = []
+    for (const col of [1, 2, 3, 4, 5]) {
+      const val = getCellText(r, col)
+      if (val !== '') parts.push(`${col}:${val}`)
+    }
+    const key = parts.join('|')
+
+    const rows = comboToRows.get(key) || []
+    rows.push(r)
+    comboToRows.set(key, rows)
+  }
+
+  // 组合出现多次 → 每一行都在房号列报错
+  const results: ValidationResult[] = []
+  comboToRows.forEach((rows) => {
+    if (rows.length <= 1) return
+    rows.forEach((row) => {
+      results.push({
+        isValid: false,
+        ruleId: '定位字段值重复',
+        severity: 'CRITICAL',
+        message: '房号重复',
+        row,
+        col: 5,
+      })
+    })
+  })
+
+  return results
+}
+
+/**
  * 规则3: 客户信息一致性
  * 同一证件号码对应不同的客户名称 → 报错
  * 检查租户(col=30, col=26)
@@ -199,6 +251,7 @@ export function validateOwnerIdNoConsistency(): ValidationResult[] {
 export function validateAllCrossRow(): ValidationResult[] {
   const results: ValidationResult[] = []
   results.push(...validatePropertyNameUniqueness())
+  results.push(...validateLocationDuplicate())
   results.push(...validateCustomerConsistency())
   results.push(...validateDateOrder())
   results.push(...validateOwnerIdNoConsistency())
@@ -213,6 +266,10 @@ export function validateCrossRowByCol(col: number): ValidationResult[] {
   // 房产简称列 → 唯一性校验
   if (col === 6) {
     results.push(...validatePropertyNameUniqueness())
+  }
+  // 定位字段（管理区域/楼栋/单元/楼层/房号）→ 定位重复校验
+  if (col >= 1 && col <= 5) {
+    results.push(...validateLocationDuplicate())
   }
   // 租户证件号码列 → 一致性校验
   if (col === 30) {

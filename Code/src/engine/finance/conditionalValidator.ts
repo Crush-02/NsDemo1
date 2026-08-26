@@ -15,7 +15,7 @@ function validateExemptionAmountToCategory(row: number): ValidationResult | null
   return {
     isValid: false,
     ruleId: '减免金额_减免分类联动',
-    severity: 'HIGH',
+    severity: 'CRITICAL',
     message: '减免金额已填写时，减免分类为必填项',
     row, col: 10,
   }
@@ -28,7 +28,7 @@ function validateExemptionCategoryToAmount(row: number): ValidationResult | null
   return {
     isValid: false,
     ruleId: '减免分类_减免金额联动',
-    severity: 'HIGH',
+    severity: 'CRITICAL',
     message: '减免分类已填写时，减免金额为必填项',
     row, col: 9,
   }
@@ -53,21 +53,21 @@ function validatePaymentTriple(row: number): ValidationResult[] {
 
   if (!hasAmount && (hasDate || hasMethod)) {
     results.push({
-      isValid: false, ruleId: '缴款三字段联动', severity: 'HIGH',
+      isValid: false, ruleId: '缴款三字段联动', severity: 'CRITICAL',
       message: '缴款金额、缴款日期、支付方式三个字段需同时填写或同时为空',
       row, col: 13,
     })
   }
   if (!hasDate && (hasAmount || hasMethod)) {
     results.push({
-      isValid: false, ruleId: '缴款三字段联动', severity: 'HIGH',
+      isValid: false, ruleId: '缴款三字段联动', severity: 'CRITICAL',
       message: '缴款金额、缴款日期、支付方式三个字段需同时填写或同时为空',
       row, col: 14,
     })
   }
   if (!hasMethod && (hasAmount || hasDate)) {
     results.push({
-      isValid: false, ruleId: '缴款三字段联动', severity: 'HIGH',
+      isValid: false, ruleId: '缴款三字段联动', severity: 'CRITICAL',
       message: '缴款金额、缴款日期、支付方式三个字段需同时填写或同时为空',
       row, col: 15,
     })
