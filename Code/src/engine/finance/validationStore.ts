@@ -483,7 +483,8 @@ export async function handleBulkDelete(rows: number[], colRange?: { startCol: nu
     }
 
     // 3. 应用样式（增量模式）- 此时仍处于批量模式，不会触发刷新
-    applyStylesViaFlowdata(window.__dirtyRowsForBulk)
+    // 只遍历实际变化的列范围，避免 18 列全遍历
+    applyStylesViaFlowdata(window.__dirtyRowsForBulk, { startCol, endCol })
     financeState.batchProgress = 90
 
     // 4. 关闭批量模式，执行最终统一刷新！
@@ -563,6 +564,16 @@ export async function handleBulkEdit(
 
     // 1. 分帧写入数据（cellUpdateBefore 拦截了 Luckysheet 内部写入，需要手动补写）
     if (editValue !== undefined && editValue !== null) {
+      // 【性能优化】预构建 celldata 坐标索引（"r_c" → 下标），
+      // 将逐格 findIndex 的 O(n²) 降为 O(1) 查找，消除大批量编辑时的卡顿
+      const celldataIndex = new Map<string, number>()
+      for (let i = 0; i < celldata.length; i++) {
+        const item = celldata[i]
+        if (item && typeof item.r === 'number' && typeof item.c === 'number') {
+          celldataIndex.set(`${item.r}_${item.c}`, i)
+        }
+      }
+
       while (processedRows < totalRows) {
         const batch = rows.slice(processedRows, processedRows + BATCH_ROWS_PER_FRAME)
 
@@ -581,12 +592,14 @@ export async function handleBulkEdit(
               }
             }
 
-            // 同步 celldata
-            const idx = celldata.findIndex((item: any) => item.r === row && item.c === c)
-            if (idx >= 0) {
+            // 同步 celldata（O(1) 索引定位，替代逐格 findIndex）
+            const key = `${row}_${c}`
+            const idx = celldataIndex.get(key)
+            if (idx !== undefined && idx >= 0) {
               celldata[idx].v = { v: editValue, m: String(editValue), ct: celldata[idx].v?.ct || { fa: 'General', t: 'g' } }
             } else {
               celldata.push({ r: row, c: c, v: { v: editValue, m: String(editValue), ct: { fa: 'General', t: 'g' } } })
+              celldataIndex.set(key, celldata.length - 1)
             }
           }
         }
@@ -614,7 +627,8 @@ export async function handleBulkEdit(
     }
 
     // 3. 统一应用样式（通过 flowdata 直接修改，不触发渲染）
-    applyStylesViaFlowdata(allDirtyRows)
+    // 只遍历实际变化的列范围，避免 18 列全遍历
+    applyStylesViaFlowdata(allDirtyRows, { startCol, endCol })
     financeState.batchProgress = 90
 
     // 4. 跨行校验
@@ -652,8 +666,9 @@ export async function handleBulkEdit(
  * 通过直接修改flowdata批量应用样式
  * @param dirtyRows 可选的脏行集合。提供时只处理这些行的样式（增量模式）；
  *                   不提供或为空时全量遍历所有results（向后兼容）
+ * @param colRange 可选的列范围（批量编辑/删除时传入，只遍历实际变化的列，减少无效遍历）
  */
-function applyStylesViaFlowdata(dirtyRows?: Set<number>) {
+function applyStylesViaFlowdata(dirtyRows?: Set<number>, colRange?: { startCol: number; endCol: number }) {
   const ls = (window as any).luckysheet
   if (!ls) return
 
@@ -669,8 +684,11 @@ function applyStylesViaFlowdata(dirtyRows?: Set<number>) {
 
   if (dirtyRows && dirtyRows.size > 0) {
     // ===== 增量模式：只遍历脏行相关的单元格 =====
+    // 限定列范围（若传入）可避免批量编辑单列时仍遍历全部 18 列
+    const colStart = colRange?.startCol ?? 0
+    const colEnd = colRange?.endCol ?? (FINANCE_COL_COUNT - 1)
     for (const row of dirtyRows) {
-      for (let col = 0; col < FINANCE_COL_COUNT; col++) {
+      for (let col = colStart; col <= colEnd; col++) {
         const key = `${row}-${col}`
 
         // 检查是否有错误结果
@@ -854,30 +872,57 @@ function scheduleCrossRowValidation(col: number) {
   }, 800)
 }
 
+/**
+ * 执行跨行校验（批量写入 + 统一样式应用）
+ * 【优化】替代逐条 appendCellResult + applyCellStyle：
+ * 1. 结果先按单元格聚合批量合并进 financeState.results（仅一次 markStatsDirty）
+ * 2. 受影响行统一走 applyStylesViaFlowdata（flowdata 直改 + 单次刷新），
+ *    避免大量单元格逐条 setCellFormat 导致卡死
+ */
 function executeCrossRowValidation(col: number) {
   const crossRowResults = validateCrossRowByCol(col)
 
   // 清除旧的跨行结果，返回被清除的单元格key列表
   const clearedKeys = clearCrossRowResultsForCol(col)
 
-  // 写入新的跨行结果
-  const newResultKeys = new Set<string>()
-  for (const r of crossRowResults) {
-    appendCellResult(r.row, r.col, r)
-    newResultKeys.add(cellKey(r.row, r.col))
-    applyCellStyle(r.row, r.col, getWorstResult(r.row, r.col), false)
+  // 批量写入新的跨行结果（按单元格聚合，一次 markStatsDirty）
+  if (crossRowResults.length > 0) {
+    const batchMap = new Map<string, ValidationResult[]>()
+    for (const r of crossRowResults) {
+      r.message = sanitizeMessage(r.message)
+      const key = cellKey(r.row, r.col)
+      const list = batchMap.get(key) || []
+      list.push(r)
+      batchMap.set(key, list)
+    }
+    batchMap.forEach((list, key) => {
+      const existing = financeState.results.get(key)
+      if (existing) existing.push(...list)
+      else financeState.results.set(key, list)
+    })
   }
 
-  // 【修复】被清除旧跨行结果、且未重新出现跨行错误的单元格，恢复其样式
+  // 收集受影响行与列范围（新结果 + 被清除的旧结果）
+  const dirtyRows = new Set<number>()
+  let minCol = Infinity, maxCol = -Infinity
+  const track = (row: number, col: number) => {
+    dirtyRows.add(row)
+    if (col < minCol) minCol = col
+    if (col > maxCol) maxCol = col
+  }
+  for (const r of crossRowResults) track(r.row, r.col)
   for (const key of clearedKeys) {
-    if (newResultKeys.has(key)) continue
     const [rs, cs] = key.split('-')
-    const row = Number(rs), col = Number(cs)
-    applyCellStyle(row, col, getWorstResult(row, col), false)
+    track(Number(rs), Number(cs))
+  }
+
+  // 统一样式应用（flowdata 直改 + 单次 jfrefreshgrid）
+  if (dirtyRows.size > 0) {
+    const colRange = minCol <= maxCol ? { startCol: minCol, endCol: maxCol } : undefined
+    applyStylesViaFlowdata(dirtyRows, colRange)
   }
 
   markStatsDirty()
-  flushStyleBatchSync()
 }
 
 // ==================== 辅助函数 ====================

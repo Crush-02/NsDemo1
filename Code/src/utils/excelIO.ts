@@ -20,9 +20,27 @@ export interface ColumnMappingResult {
 }
 
 /**
+ * 获取 sheet 实际最大列数（列索引上限 + 1）
+ * 优先从 sheet 的 !ref 范围推导（可靠），缺失时按所有行最大长度兜底
+ */
+function getActualMaxCol(sheet: XLSX.WorkSheet, rows: unknown[][]): number {
+  try {
+    const ref = sheet['!ref']
+    if (ref) {
+      const range = XLSX.utils.decode_range(ref)
+      if (range && typeof range.e?.c === 'number') return range.e.c + 1
+    }
+  } catch {
+    // !ref 解析失败时走兜底逻辑
+  }
+  return rows.reduce((max, row) => Math.max(max, row?.length ?? 0), 0)
+}
+
+/**
  * 读取Excel文件，返回表头和数据行
  * @param file Excel文件
- * @param maxCols 最大列数，默认取房产模块的32列
+ * @param maxCols 工具期望的最小列数（如应收模块传18）；实际读取宽度取「maxCols 与 sheet 实际列数」的较大者，
+ *                避免超宽模板（如27列应收模板）中缴款日期/支付方式所在列被截断丢失。不传时默认房产模块的32列
  * @param headerRowIndex 表头所在行索引（0-based），默认0即第一行。设为3可跳过前3行模板提示行
  */
 export function readExcelFile(
@@ -58,7 +76,9 @@ export function readExcelFile(
 
         // 数据行从表头行的下一行开始
         const dataRows = rows.slice(headerRowIndex + 1)
-        const maxCol = maxCols ?? HEADER_COLUMNS.length
+        // 读取宽度 = max(工具期望列数, sheet 实际列数)，保证模板中的列不被截断
+        // （如金桂家园应收模板为27列，缴款日期col18、支付方式col19若按18截断会丢失）
+        const maxCol = Math.max(maxCols ?? 0, getActualMaxCol(sheet, rows))
 
         const normalized = dataRows.map((row: any[]) => {
           const arr: string[] = []

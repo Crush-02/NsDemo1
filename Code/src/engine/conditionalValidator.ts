@@ -49,15 +49,15 @@ function validateSaleDateOwner(row: number): ValidationResult | null {
   }
 }
 
-/** 规则20: 业主客户类型_必填（触发：有业主信息） */
+/** 规则20: 业主客户类型_必填（触发：仅业主类型有值——兜底"只填业主类型"场景；其余触发源由 validateOwnerGroupRequired 统一处理） */
 function validateOwnerCustType(row: number): ValidationResult | null {
-  if (!hasOwnerInfo(row)) return null
+  if (getCellText(row, 17) === '') return null
   if (getCellText(row, 15) !== '') return null
   return {
     isValid: false,
     ruleId: '业主客户类型_必填',
     severity: 'CRITICAL',
-    message: '业主的客户信息填写时，业主客户类型必填（个人 或 企业）',
+    message: '业主类型已填写时，业主客户类型必填（个人 或 企业）',
     row,
     col: 15,
   }
@@ -207,20 +207,74 @@ function validateTenantIdNoRequired(row: number): ValidationResult | null {
   }
 }
 
-/** 业主客户类型有值时，业主类型必填 */
-function validateOwnerTypeRequired(row: number): ValidationResult | null {
-  const custType = getCellText(row, 15)
-  if (custType === '') return null  // 业主客户类型未填，不触发
-  const ownerType = getCellText(row, 17)
-  if (ownerType !== '') return null  // 业主类型已填，不报错
-  return {
-    isValid: false,
-    ruleId: '业主类型_必填',
-    severity: 'CRITICAL',
-    message: '业主客户类型已填写时，业主类型必填（业主 或 共有产权人）',
-    row,
-    col: 17,
+/**
+ * 业主信息三组联动必填校验（聚合函数，按缺失字段去重）
+ * 规则1: 业主联系电话(18)有值 → 业主客户类型(15)、业主客户名称(16)、业主类型(17) 均必填
+ * 规则2: 业主客户类型(15)有值 → 业主类型(17)、业主客户名称(16) 均必填
+ * 规则3: 业主客户名称(16)有值 → 业主类型(17)、业主客户类型(15) 均必填
+ * 同一缺失字段只报一次，多个触发源合并进一条消息
+ */
+function validateOwnerGroupRequired(row: number): ValidationResult[] {
+  const results: ValidationResult[] = []
+
+  /** 缺失目标列 → 触发源标签列表（聚合，防重复） */
+  const missingMap = new Map<number, string[]>()
+
+  /** 触发源标签 */
+  const TRIGGER_LABELS: Record<number, string> = {
+    15: '业主客户类型',
+    16: '业主客户名称',
+    17: '业主类型',
+    18: '业主联系电话',
   }
+  /** 目标列 → ruleId（沿用既有命名策略：目标字段_必填） */
+  const RULE_IDS: Record<number, string> = {
+    15: '业主客户类型_必填',
+    16: '业主客户名称_必填',
+    17: '业主类型_必填',
+  }
+
+  /** 若目标列缺失，记录其触发源标签（去重） */
+  const markMissing = (sourceCol: number, targetCol: number) => {
+    if (getCellText(row, targetCol) === '') {
+      const list = missingMap.get(targetCol) || []
+      const triggerLabel = TRIGGER_LABELS[sourceCol]
+      if (!list.includes(triggerLabel)) list.push(triggerLabel)
+      missingMap.set(targetCol, list)
+    }
+  }
+
+  // 规则1: 业主联系电话(18)有值 → 15/16/17 必填
+  if (getCellText(row, 18) !== '') {
+    markMissing(18, 15)
+    markMissing(18, 16)
+    markMissing(18, 17)
+  }
+  // 规则2: 业主客户类型(15)有值 → 17/16 必填
+  if (getCellText(row, 15) !== '') {
+    markMissing(15, 17)
+    markMissing(15, 16)
+  }
+  // 规则3: 业主客户名称(16)有值 → 17/15 必填
+  if (getCellText(row, 16) !== '') {
+    markMissing(16, 17)
+    markMissing(16, 15)
+  }
+
+  // 按缺失列聚合生成错误（一列一条，标明缺失字段名）
+  missingMap.forEach((triggers, col) => {
+    const triggerText = triggers.join('、')
+    results.push({
+      isValid: false,
+      ruleId: RULE_IDS[col],
+      severity: 'CRITICAL',
+      message: `${triggerText}已填写时，${TRIGGER_LABELS[col]}必填`,
+      row,
+      col,
+    })
+  })
+
+  return results
 }
 
 /** 规则: 单元名称有值时，楼栋名称必填 */
@@ -284,8 +338,8 @@ export function validateConditionalRow(row: number): ValidationResult[] {
   const r_tenant_id_no = validateTenantIdNoRequired(row)
   if (r_tenant_id_no) results.push(r_tenant_id_no)
 
-  const r_owner_type = validateOwnerTypeRequired(row)
-  if (r_owner_type) results.push(r_owner_type)
+  // 业主三组联动必填（规则1/2/3，聚合函数）
+  results.push(...validateOwnerGroupRequired(row))
 
   const r_building_name = validateBuildingNameRequired(row)
   if (r_building_name) results.push(r_building_name)

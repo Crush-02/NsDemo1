@@ -20,36 +20,50 @@ function getFlowdata(): any[][] | null {
 /**
  * 规则1: 项目名称一致性
  * 一个表格内项目名称必须保持一致
+ * 【优化】众数主流判定 + 仅对"非主流名称"所在行报错（局部报错），
+ * 避免"多名称→全表株连报错"导致大批量编辑时卡死
  */
 export function validateProjectNameConsistency(): ValidationResult[] {
   const flowdata = getFlowdata()
   if (!flowdata) return []
 
-  const projectNames = new Set<string>()
+  // 统计各项目名称出现的次数与行号
+  const nameCount = new Map<string, number>()
   const nameRows = new Map<string, number[]>()
 
   for (let r = FINANCE_HEADER_ROW_COUNT; r < flowdata.length; r++) {
     if (!isRowNotEmpty(r)) continue
     const val = getCellText(r, 0)
     if (val === '') continue
-    projectNames.add(val)
+    nameCount.set(val, (nameCount.get(val) || 0) + 1)
     const rows = nameRows.get(val) || []
     rows.push(r)
     nameRows.set(val, rows)
   }
 
-  // 如果只有一个项目名称（或为空），则通过
-  if (projectNames.size <= 1) return []
+  // 只有一个项目名称（或全部为空），则通过
+  if (nameCount.size <= 1) return []
 
-  // 有多个不同的项目名称 → 所有行都报错
+  // 取出现次数最多的名称作为主流名称（众数）
+  let mainName = ''
+  let maxCount = 0
+  nameCount.forEach((count, name) => {
+    if (count > maxCount) {
+      maxCount = count
+      mainName = name
+    }
+  })
+
+  // 仅对"非主流名称"所在行报错，主流名称所在行不标红
   const results: ValidationResult[] = []
-  nameRows.forEach((rows) => {
+  nameRows.forEach((rows, name) => {
+    if (name === mainName) return
     rows.forEach((row) => {
       results.push({
         isValid: false,
         ruleId: '项目名称一致性',
         severity: 'CRITICAL',
-        message: '一个表格内项目名称必须保持一致，不允许出现多个不同的项目名称',
+        message: '一张表只能导入同一项目的数据',
         row, col: 0,
       })
     })
