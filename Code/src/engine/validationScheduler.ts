@@ -31,8 +31,23 @@ export function createSchedulerProgress(): SchedulerProgress {
 /** Property模块的全局进度状态（向后兼容） */
 export const schedulerProgress = createSchedulerProgress()
 
+/** 高精度计时（回退 Date.now） */
+function now(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+}
+
 export class ValidationScheduler {
   private batchSize = 50
+  /**
+   * 每批的时间预算（ms）：跑满即让出主线程。
+   * 固定 batchSize 分批时，4.4 万行会产生近 900 个批次，
+   * 光「让出主线程」的调度开销在浏览器里就要 3.6 秒以上（每批 4ms 下限），
+   * 而真正做校验的时间不到 1 秒 —— 改为按时间预算分批可把批次数压到几十个。
+   * 设为 null 可退回「按 batchSize 固定分批」。
+   */
+  private frameBudgetMs: number | null = 25
   private currentRow = 1
   private totalRows = 0
   private headerRowCount = 1
@@ -49,12 +64,14 @@ export class ValidationScheduler {
   private applyBatchResults: (results: ValidationResult[], startRow: number, endRow: number) => void
   private applyCrossRowResults: (results: ValidationResult[]) => void
   private updatePendingForBatch: (startRow: number, endRow: number) => void
-  private updateStatsNow: () => void
+  private updateStatsNow: (force?: boolean) => void
   private getTotalDataRows: () => number
 
   constructor(opts: {
     headerRowCount: number
     batchSize?: number
+    /** 每批时间预算（ms）。不传默认 25；传 null 退回固定批次 */
+    frameBudgetMs?: number | null
     progress?: SchedulerProgress
     validateRowBatch: (startRow: number, endRow: number, skipRows: Set<number>) => ValidationResult[]
     validateCrossRowAll: () => ValidationResult[]
@@ -62,11 +79,12 @@ export class ValidationScheduler {
     applyBatchResults: (results: ValidationResult[], startRow: number, endRow: number) => void
     applyCrossRowResults: (results: ValidationResult[]) => void
     updatePendingForBatch: (startRow: number, endRow: number) => void
-    updateStatsNow: () => void
+    updateStatsNow: (force?: boolean) => void
     getTotalDataRows: () => number
   }) {
     this.headerRowCount = opts.headerRowCount
     if (opts.batchSize) this.batchSize = opts.batchSize
+    if (opts.frameBudgetMs !== undefined) this.frameBudgetMs = opts.frameBudgetMs
     this.progress = opts.progress || schedulerProgress
     this.validateRowBatch = opts.validateRowBatch
     this.validateCrossRowAll = opts.validateCrossRowAll
@@ -158,33 +176,44 @@ export class ValidationScheduler {
   private executeBatch() {
     if (this.isCancelled) return
 
-    const batchEnd = Math.min(this.currentRow + this.batchSize, this.headerRowCount + this.totalRows)
+    const totalEnd = this.headerRowCount + this.totalRows
 
-    // 校验当前批次（跳过用户已编辑的行）
-    const batchResults = this.validateRowBatch(this.currentRow, batchEnd, this.editedRows)
+    if (this.frameBudgetMs === null) {
+      // 固定分批（兼容旧行为）
+      const batchEnd = Math.min(this.currentRow + this.batchSize, totalEnd)
+      this.runBatch(this.currentRow, batchEnd)
+      this.currentRow = batchEnd
+    } else {
+      // 时间预算分批：在预算内尽可能多跑几行，把批次数量压下来
+      const deadline = now() + this.frameBudgetMs
+      while (this.currentRow < totalEnd) {
+        const batchEnd = Math.min(this.currentRow + this.batchSize, totalEnd)
+        this.runBatch(this.currentRow, batchEnd)
+        this.currentRow = batchEnd
+        if (now() >= deadline) break
+      }
+    }
 
-    // 写入结果 + 应用样式
-    this.applyBatchResults(batchResults, this.currentRow, batchEnd)
+    // 更新进度（按已处理行数上报，与批次大小无关）
+    this.progress.current = this.currentRow - this.headerRowCount
 
-    // 更新待填写状态
-    this.updatePendingForBatch(this.currentRow, batchEnd)
-
-    // 更新进度
-    const validatedCount = batchEnd - this.headerRowCount
-    this.progress.current = validatedCount
-
-    // 更新统计
+    // 统计：节流由 store 侧的 updateStatsNow 实现（此处仅每批末尾调一次）
     this.updateStatsNow()
 
-    this.currentRow = batchEnd
-
-    if (this.currentRow < this.headerRowCount + this.totalRows) {
+    if (this.currentRow < totalEnd) {
       // 还有下一批
       this.scheduleNextBatch()
     } else {
       // 所有行校验完毕 → 执行跨行校验
       this.executeCrossRowPhase()
     }
+  }
+
+  /** 执行一批：校验 + 写入结果 + 更新待填写状态 */
+  private runBatch(startRow: number, endRow: number) {
+    const batchResults = this.validateRowBatch(startRow, endRow, this.editedRows)
+    this.applyBatchResults(batchResults, startRow, endRow)
+    this.updatePendingForBatch(startRow, endRow)
   }
 
   private executeCrossRowPhase() {
@@ -198,8 +227,8 @@ export class ValidationScheduler {
     // 写入结果 + 应用样式
     this.applyCrossRowResults(crossRowResults)
 
-    // 更新统计
-    this.updateStatsNow()
+    // 更新统计：force = true 绕过 store 侧的节流，保证最终统计准确
+    this.updateStatsNow(true)
 
     // 完成
     this._isRunning = false

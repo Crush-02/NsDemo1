@@ -56,6 +56,26 @@ export const SNAPSHOT_THRESHOLD = 500
 /** 快速删除路径阈值：超过此值跳过校验直接清除 */
 export const FAST_DELETE_THRESHOLD = 100
 
+/**
+ * 统计更新节流间隔（ms）
+ *
+ * 校验期间 UI 只需要大致进度，无需每个批次都重算全表 ——
+ * updateStatsNow() 里的 getFilledRowCount() 是一次全表扫描（房产模块 32 列），
+ * 大数据量下这一项会成为校验耗时的主要来源。
+ * 节流后同一场景只计算数次；校验结束时由调度器 force 调用兜底，最终值仍准确。
+ */
+const STATS_THROTTLE_MS = 250
+
+/** 上次统计时间（performance.now 口径） */
+let lastStatsAt = 0
+
+/** 高精度计时（回退 Date.now） */
+function nowMs(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+}
+
 // ==================== 状态 ====================
 
 export const state = reactive({
@@ -445,16 +465,20 @@ export async function handleBulkDelete(rows: number[], colRange?: { startCol: nu
     const sheetIndex = ls?.getCurrentSheetIndex?.()
     const sheet = ls?.getSheetByIndex?.(sheetIndex) || ls?.getSheet?.()
     const flowdata = sheet?.data || []
-    const celldata = sheet?.celldata || []
+    const celldata = Array.isArray(sheet?.celldata) ? sheet.celldata : null
 
     console.log(`[handleBulkDelete] 开始处理 ${totalRows} 行 × 列${startCol}-${endCol}`)
-    console.log(`[handleBulkDelete] 使用双重数据同步模式 (flowdata + celldata)`)
+    console.log(`[handleBulkDelete] celldata 同步：${celldata ? '启用' : '跳过（不存在）'}`)
 
     // 预先构建要删除的单元格坐标集合（用于快速查找celldata中的条目）
-    const cellsToDelete = new Set<string>()
-    for (const row of rows) {
-      for (let col = startCol; col <= endCol; col++) {
-        cellsToDelete.add(`${row}-${col}`)
+    // 改走 data 建表后 sheet.celldata 不存在，且 Luckysheet 从不回写它，
+    // 仅在确实存在 celldata 时才构建，避免白建「行数 × 列数」个坐标字符串
+    const cellsToDelete = celldata && celldata.length > 0 ? new Set<string>() : null
+    if (cellsToDelete) {
+      for (const row of rows) {
+        for (let col = startCol; col <= endCol; col++) {
+          cellsToDelete.add(`${row}-${col}`)
+        }
       }
     }
 
@@ -490,7 +514,7 @@ export async function handleBulkDelete(rows: number[], colRange?: { startCol: nu
 
     // 3. 【关键】同步清理 celldata（在所有 flowdata 修改完成后统一处理）
     // 这样可以避免频繁操作数组导致的性能问题
-    if (Array.isArray(celldata) && cellsToDelete.size > 0) {
+    if (celldata && cellsToDelete && cellsToDelete.size > 0) {
       console.log(`[handleBulkDelete] 同步清理 celldata，共 ${cellsToDelete.size} 个单元格`)
 
       // 使用倒序遍历，安全删除数组元素
@@ -620,13 +644,16 @@ export async function handleBulkEdit(
               }
             }
 
-            // 同步 celldata
-            const key = `${row}_${c}`
-            const idx = celldata.findIndex((item: any) => item.r === row && item.c === c)
-            if (idx >= 0) {
-              celldata[idx].v = { v: editValue, m: String(editValue), ct: celldata[idx].v?.ct || { fa: 'General', t: 'g' } }
-            } else {
-              celldata.push({ r: row, c: c, v: { v: editValue, m: String(editValue), ct: { fa: 'General', t: 'g' } } })
+            // 同步 celldata（仅在存在 celldata 时）
+            // 改走 data 建表后 sheet.celldata 不存在，且 Luckysheet 从不回写它，
+            // 因此这里跳过，避免向一个无人读取的数组里 push 数十万个对象
+            if (celldata) {
+              const idx = celldata.findIndex((item: any) => item.r === row && item.c === c)
+              if (idx >= 0) {
+                celldata[idx].v = { v: editValue, m: String(editValue), ct: celldata[idx].v?.ct || { fa: 'General', t: 'g' } }
+              } else {
+                celldata.push({ r: row, c: c, v: { v: editValue, m: String(editValue), ct: { fa: 'General', t: 'g' } } })
+              }
             }
           }
         }
@@ -1104,6 +1131,8 @@ const scheduler = new ValidationScheduler({
     clearPreviousStyles()
     state.results.clear()
     state.pendingCells.clear()
+    // 重置统计节流：保证新一轮的首次统计立即生效
+    lastStatsAt = 0
   },
   applyBatchResults(results, startRow, endRow) {
     // 仅写入结果到内存，不调用任何Luckysheet API
@@ -1149,7 +1178,11 @@ const scheduler = new ValidationScheduler({
       }
     }
   },
-  updateStatsNow() {
+  updateStatsNow(force = false) {
+    // 节流：校验期间避免每个批次都做全表扫描；force 由调度器在校验完成时传入
+    const t = nowMs()
+    if (!force && t - lastStatsAt < STATS_THROTTLE_MS) return
+    lastStatsAt = t
     updateStatsNow()
   },
   getTotalDataRows() {

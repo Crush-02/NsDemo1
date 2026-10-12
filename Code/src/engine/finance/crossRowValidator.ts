@@ -27,29 +27,28 @@ export function validateProjectNameConsistency(): ValidationResult[] {
   const flowdata = getFlowdata()
   if (!flowdata) return []
 
-  // 统计各项目名称出现的次数与行号
-  const nameCount = new Map<string, number>()
+  // 统计各项目名称出现的行号（行号数量即出现次数）
   const nameRows = new Map<string, number[]>()
 
   for (let r = FINANCE_HEADER_ROW_COUNT; r < flowdata.length; r++) {
     if (!isRowNotEmpty(r)) continue
     const val = getCellText(r, 0)
     if (val === '') continue
-    nameCount.set(val, (nameCount.get(val) || 0) + 1)
     const rows = nameRows.get(val) || []
     rows.push(r)
     nameRows.set(val, rows)
   }
 
   // 只有一个项目名称（或全部为空），则通过
-  if (nameCount.size <= 1) return []
+  if (nameRows.size <= 1) return []
 
-  // 取出现次数最多的名称作为主流名称（众数）
+  // 取行数最多的名称作为主流名称（众数）；平局时按首次出现顺序取胜
+  // （Map 插入序 = 该名称首次出现的行序）
   let mainName = ''
   let maxCount = 0
-  nameCount.forEach((count, name) => {
-    if (count > maxCount) {
-      maxCount = count
+  nameRows.forEach((rows, name) => {
+    if (rows.length > maxCount) {
+      maxCount = rows.length
       mainName = name
     }
   })

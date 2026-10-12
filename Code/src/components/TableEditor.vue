@@ -31,9 +31,10 @@
 import { onMounted, onBeforeUnmount, ref, computed } from 'vue'
 import { HEADER_COLUMNS, type CellData } from '../types'
 import { getCurrentCelldata, saveToLocal, loadFromLocal, formatTimestamp } from '../utils/autoSave'
-import { buildColumnMapping, remapRows, type ExcelReadResult } from '../utils/excelIO'
+import { buildColumnMapping, remapRows, normalizeDateColumns, type ExcelReadResult } from '../utils/excelIO'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import { useValidationStore } from '../engine/validationStore'
+import { DATE_COLUMNS } from '../engine/simpleValidator'
 import CellTooltip from './CellTooltip.vue'
 
 const cellTooltipRef = ref<InstanceType<typeof CellTooltip> | null>(null)
@@ -535,6 +536,44 @@ function buildColumnLen(): Record<number, number> {
   return result
 }
 
+/** 空表默认行数（与改前的 sheet.row 取值保持一致） */
+const DEFAULT_ROW_COUNT = 100
+
+/**
+ * 把扁平的 celldata 转成 Luckysheet 的二维网格，供 create 的 `data` 使用
+ *
+ * **为什么必须走 `data` 而不是 `celldata`**：
+ * Luckysheet 的 buildGridData 只拿到 celldata 时，会从空表起步逐条处理，
+ * 而 celldata 按行递增排列 —— 每遇到一个新行号就调用 Zo() 复制整张已建好的表
+ * （`for (c...) e[c] = [].concat(e[c].concat(l))`），整体是 O(行数²)。
+ * 实测 44,579 行：只给 celldata > 180 秒（页面卡死），给 data 则 545ms。
+ *
+ * 网格用 null 预填（不分配对象）即可，Luckysheet 的线性分支会逐格写入。
+ *
+ * @param cells 扁平单元格数组（表头 + 数据）
+ * @param minRows 最小行数（空表时的默认网格行数）
+ * @param minCols 最小列数（工具列数）
+ * @returns grid[row][col] = 单元格对象 或 null
+ */
+function toGridData(cells: CellData[], minRows: number, minCols: number): any[][] {
+  let maxRow = 0
+  let maxCol = 0
+  for (const cell of cells) {
+    if (cell.r > maxRow) maxRow = cell.r
+    if (cell.c > maxCol) maxCol = cell.c
+  }
+
+  const rows = Math.max(maxRow + 1, minRows)
+  const cols = Math.max(maxCol + 1, minCols)
+
+  const grid: any[][] = new Array(rows)
+  for (let r = 0; r < rows; r++) grid[r] = new Array(cols).fill(null)
+  for (const cell of cells) {
+    grid[cell.r][cell.c] = cell.v
+  }
+  return grid
+}
+
 /** 初始化Luckysheet */
 function initLuckysheet(extraCelldata?: CellData[]) {
   const luckysheet = (window as any).luckysheet
@@ -554,6 +593,9 @@ function initLuckysheet(extraCelldata?: CellData[]) {
 
   const columnlen = buildColumnLen()
 
+  // 转二维网格后传给 data（而非 celldata），绕开 Luckysheet 的 O(行数²) 建表
+  const gridData = toGridData(celldata, DEFAULT_ROW_COUNT, HEADER_COLUMNS.length)
+
   luckysheet.create({
     container: 'luckysheet',
     lang: 'zh',
@@ -564,12 +606,13 @@ function initLuckysheet(extraCelldata?: CellData[]) {
         color: '',
         status: 1,
         order: 0,
-        celldata,
+        data: gridData,
         config: {
           columnlen,
           rowhigh: { 0: 40 },
         },
-        row: 100,
+        // 行数跟随实际数据：row 同时决定滚动条范围与网格尺寸
+        row: gridData.length,
         column: 30,
         defaultRowHeight: 26,
         defaultColWidth: 100,
@@ -806,8 +849,12 @@ function importData(result: ExcelReadResult) {
     return
   }
 
-  // 根据映射重排数据
-  const remapped = remapRows(result.rows, mapping, HEADER_COLUMNS.length)
+  // 根据映射重排数据；再把日期列内的「文本型日期」统一归一为 YYYY-MM-DD
+  // （如出租开始日期整列是文本 2024.10.1，Excel 未认定其为日期，需在此兜底）
+  const remapped = normalizeDateColumns(
+    remapRows(result.rows, mapping, HEADER_COLUMNS.length),
+    DATE_COLUMNS
+  )
 
   const celldata: CellData[] = []
   remapped.forEach((row, r) => {

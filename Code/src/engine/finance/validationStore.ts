@@ -59,6 +59,26 @@ export const SNAPSHOT_THRESHOLD = 500
 /** 快速删除路径阈值：超过此值跳过校验直接清除 */
 export const FAST_DELETE_THRESHOLD = 100
 
+/**
+ * 统计更新节流间隔（ms）
+ *
+ * 校验期间 UI 只需要大致进度，无需每个批次都重算全表 ——
+ * updateStatsNow() 里的 getFilledRowCount() 是一次全表 18 列扫描（实测 9ms），
+ * 固定 50 行/批时 4.4 万行有 892 个批次，光这一项就要 8 秒。
+ * 节流后同一场景只计算数次；校验结束时由调度器 force 调用兜底，最终值仍准确。
+ */
+const STATS_THROTTLE_MS = 250
+
+/** 上次统计时间（performance.now 口径） */
+let lastStatsAt = 0
+
+/** 高精度计时（回退 Date.now） */
+function nowMs(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+}
+
 // ==================== 状态 ====================
 
 /** 应收已收模块独立的校验进度状态 */
@@ -127,15 +147,6 @@ function setCellResult(row: number, col: number, result: ValidationResult | null
   } else {
     financeState.results.delete(key)
   }
-  markStatsDirty()
-}
-
-function appendCellResult(row: number, col: number, result: ValidationResult) {
-  result.message = sanitizeMessage(result.message)
-  const key = cellKey(row, col)
-  const existing = financeState.results.get(key)
-  if (existing) existing.push(result)
-  else financeState.results.set(key, [result])
   markStatsDirty()
 }
 
@@ -423,16 +434,21 @@ export async function handleBulkDelete(rows: number[], colRange?: { startCol: nu
     const sheetIndex = ls?.getCurrentSheetIndex?.()
     const sheet = ls?.getSheetByIndex?.(sheetIndex) || ls?.getSheet?.()
     const flowdata = sheet?.data || []
-    const celldata = sheet?.celldata || []
+    // celldata 只在旧版「传 celldata 建表」时存在；改走 data 后该键不存在。
+    // 且 Luckysheet 从不回写 celldata，这里仅在确实存在时才做同步，
+    // 避免白建「行数 × 列数」个坐标字符串（4.4 万行 × 18 列 = 72 万个）。
+    const celldata = Array.isArray(sheet?.celldata) ? sheet.celldata : null
 
     console.log(`[handleBulkDelete] 开始处理 ${totalRows} 行 × 列${startCol}-${endCol}`)
-    console.log(`[handleBulkDelete] 使用双重数据同步模式 (flowdata + celldata)`)
+    console.log(`[handleBulkDelete] celldata 同步：${celldata ? '启用' : '跳过（不存在）'}`)
 
     // 预先构建要删除的单元格坐标集合（用于快速查找celldata中的条目）
-    const cellsToDelete = new Set<string>()
-    for (const row of rows) {
-      for (let col = startCol; col <= endCol; col++) {
-        cellsToDelete.add(`${row}-${col}`)
+    const cellsToDelete = celldata && celldata.length > 0 ? new Set<string>() : null
+    if (cellsToDelete) {
+      for (const row of rows) {
+        for (let col = startCol; col <= endCol; col++) {
+          cellsToDelete.add(`${row}-${col}`)
+        }
       }
     }
 
@@ -467,7 +483,7 @@ export async function handleBulkDelete(rows: number[], colRange?: { startCol: nu
     }
 
     // 3. 【关键】同步清理 celldata（在所有 flowdata 修改完成后统一处理）
-    if (Array.isArray(celldata) && cellsToDelete.size > 0) {
+    if (celldata && cellsToDelete && cellsToDelete.size > 0) {
       console.log(`[handleBulkDelete] 同步清理 celldata，共 ${cellsToDelete.size} 个单元格`)
 
       // 使用倒序遍历，安全删除数组元素
@@ -558,7 +574,10 @@ export async function handleBulkEdit(
     const sheetIndex = ls?.getCurrentSheetIndex?.()
     const sheet = ls?.getSheetByIndex?.(sheetIndex) || ls?.getSheet?.()
     const flowdata = sheet?.data || []
-    const celldata = sheet?.celldata || []
+    // celldata 只在旧版「传 celldata 建表」时存在；改走 data 后该键不存在。
+    // Luckysheet 从不回写它，因此这里仅在存在时才同步，避免大批量编辑时
+    // 向一个无人读取的数组里 push 数十万个对象。
+    const celldata = Array.isArray(sheet?.celldata) ? sheet.celldata : null
 
     console.log(`[handleBulkEdit] 开始处理 ${totalRows} 行 × 列${startCol}-${endCol}, editValue="${editValue}"`)
 
@@ -566,11 +585,13 @@ export async function handleBulkEdit(
     if (editValue !== undefined && editValue !== null) {
       // 【性能优化】预构建 celldata 坐标索引（"r_c" → 下标），
       // 将逐格 findIndex 的 O(n²) 降为 O(1) 查找，消除大批量编辑时的卡顿
-      const celldataIndex = new Map<string, number>()
-      for (let i = 0; i < celldata.length; i++) {
-        const item = celldata[i]
-        if (item && typeof item.r === 'number' && typeof item.c === 'number') {
-          celldataIndex.set(`${item.r}_${item.c}`, i)
+      const celldataIndex = celldata ? new Map<string, number>() : null
+      if (celldata && celldataIndex) {
+        for (let i = 0; i < celldata.length; i++) {
+          const item = celldata[i]
+          if (item && typeof item.r === 'number' && typeof item.c === 'number') {
+            celldataIndex.set(`${item.r}_${item.c}`, i)
+          }
         }
       }
 
@@ -592,14 +613,16 @@ export async function handleBulkEdit(
               }
             }
 
-            // 同步 celldata（O(1) 索引定位，替代逐格 findIndex）
-            const key = `${row}_${c}`
-            const idx = celldataIndex.get(key)
-            if (idx !== undefined && idx >= 0) {
-              celldata[idx].v = { v: editValue, m: String(editValue), ct: celldata[idx].v?.ct || { fa: 'General', t: 'g' } }
-            } else {
-              celldata.push({ r: row, c: c, v: { v: editValue, m: String(editValue), ct: { fa: 'General', t: 'g' } } })
-              celldataIndex.set(key, celldata.length - 1)
+            // 同步 celldata（仅在存在 celldata 时；O(1) 索引定位，替代逐格 findIndex）
+            if (celldata && celldataIndex) {
+              const key = `${row}_${c}`
+              const idx = celldataIndex.get(key)
+              if (idx !== undefined && idx >= 0) {
+                celldata[idx].v = { v: editValue, m: String(editValue), ct: celldata[idx].v?.ct || { fa: 'General', t: 'g' } }
+              } else {
+                celldata.push({ r: row, c: c, v: { v: editValue, m: String(editValue), ct: { fa: 'General', t: 'g' } } })
+                celldataIndex.set(key, celldata.length - 1)
+              }
             }
           }
         }
@@ -1070,6 +1093,8 @@ const financeScheduler = new ValidationScheduler({
     clearPreviousStyles()
     financeState.results.clear()
     financeState.pendingCells.clear()
+    // 重置统计节流：保证新一轮的首次统计立即生效
+    lastStatsAt = 0
   },
   applyBatchResults(results, startRow, endRow) {
     // 仅写入结果到内存，不调用任何Luckysheet API
@@ -1115,7 +1140,11 @@ const financeScheduler = new ValidationScheduler({
       }
     }
   },
-  updateStatsNow() {
+  updateStatsNow(force = false) {
+    // 节流：校验期间避免每个批次都做全表扫描；force 由调度器在校验完成时传入
+    const t = nowMs()
+    if (!force && t - lastStatsAt < STATS_THROTTLE_MS) return
+    lastStatsAt = t
     updateStatsNow()
   },
   getTotalDataRows() {

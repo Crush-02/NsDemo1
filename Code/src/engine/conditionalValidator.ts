@@ -49,20 +49,6 @@ function validateSaleDateOwner(row: number): ValidationResult | null {
   }
 }
 
-/** 规则20: 业主客户类型_必填（触发：仅业主类型有值——兜底"只填业主类型"场景；其余触发源由 validateOwnerGroupRequired 统一处理） */
-function validateOwnerCustType(row: number): ValidationResult | null {
-  if (getCellText(row, 17) === '') return null
-  if (getCellText(row, 15) !== '') return null
-  return {
-    isValid: false,
-    ruleId: '业主客户类型_必填',
-    severity: 'CRITICAL',
-    message: '业主类型已填写时，业主客户类型必填（个人 或 企业）',
-    row,
-    col: 15,
-  }
-}
-
 /** 规则8: 售楼日期_必填（触发：收房日期有值） */
 function validateSaleDateReceive(row: number): ValidationResult | null {
   if (getCellText(row, 13) === '') return null // 收房日期无值，不触发
@@ -212,7 +198,9 @@ function validateTenantIdNoRequired(row: number): ValidationResult | null {
  * 规则1: 业主联系电话(18)有值 → 业主客户类型(15)、业主客户名称(16)、业主类型(17) 均必填
  * 规则2: 业主客户类型(15)有值 → 业主类型(17)、业主客户名称(16) 均必填
  * 规则3: 业主客户名称(16)有值 → 业主类型(17)、业主客户类型(15) 均必填
- * 同一缺失字段只报一次，多个触发源合并进一条消息
+ * 规则4: 业主类型(17)有值 → 业主客户类型(15) 必填（沿用既有兜底行为，触发源不扩展）
+ * 同一缺失字段只报一次，多个触发源合并进一条消息。
+ * 【重要】col15 的判定唯一入口即本函数，不得在别处再写 col15 的必填规则，否则会出现重复报错。
  */
 function validateOwnerGroupRequired(row: number): ValidationResult[] {
   const results: ValidationResult[] = []
@@ -232,6 +220,10 @@ function validateOwnerGroupRequired(row: number): ValidationResult[] {
     15: '业主客户类型_必填',
     16: '业主客户名称_必填',
     17: '业主类型_必填',
+  }
+  /** 目标列 → 提示后缀（保留并入前的既有文案取值提示） */
+  const HINTS: Record<number, string> = {
+    15: '（个人 或 企业）',
   }
 
   /** 若目标列缺失，记录其触发源标签（去重） */
@@ -260,6 +252,11 @@ function validateOwnerGroupRequired(row: number): ValidationResult[] {
     markMissing(16, 17)
     markMissing(16, 15)
   }
+  // 规则4: 业主类型(17)有值 → 15 必填（原 validateOwnerCustType 的兜底职责并入此处，
+  //        由 missingMap 按目标列统一去重，避免与规则1/规则3 对 col15 重复报错）
+  if (getCellText(row, 17) !== '') {
+    markMissing(17, 15)
+  }
 
   // 按缺失列聚合生成错误（一列一条，标明缺失字段名）
   missingMap.forEach((triggers, col) => {
@@ -268,7 +265,7 @@ function validateOwnerGroupRequired(row: number): ValidationResult[] {
       isValid: false,
       ruleId: RULE_IDS[col],
       severity: 'CRITICAL',
-      message: `${triggerText}已填写时，${TRIGGER_LABELS[col]}必填`,
+      message: `${triggerText}已填写时，${TRIGGER_LABELS[col]}必填${HINTS[col] ?? ''}`,
       row,
       col,
     })
@@ -305,9 +302,6 @@ export function validateConditionalRow(row: number): ValidationResult[] {
   const r7 = validateSaleDateOwner(row)
   if (r7) results.push(r7)
 
-  const r20 = validateOwnerCustType(row)
-  if (r20) results.push(r20)
-
   const r8 = validateSaleDateReceive(row)
   if (r8) results.push(r8)
 
@@ -338,7 +332,7 @@ export function validateConditionalRow(row: number): ValidationResult[] {
   const r_tenant_id_no = validateTenantIdNoRequired(row)
   if (r_tenant_id_no) results.push(r_tenant_id_no)
 
-  // 业主三组联动必填（规则1/2/3，聚合函数）
+  // 业主联动必填（规则1/2/3/4，聚合函数：col15 的唯一判定入口）
   results.push(...validateOwnerGroupRequired(row))
 
   const r_building_name = validateBuildingNameRequired(row)
