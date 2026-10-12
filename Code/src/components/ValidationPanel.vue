@@ -8,81 +8,109 @@
         </el-button>
       </div>
 
-      <!-- 统计概览 -->
-      <div class="panel-summary">
-        <div class="summary-item summary-error">
-          <span class="summary-count">{{ state.errorCount }}</span>
-          <span class="summary-label">错误</span>
-        </div>
-        <div class="summary-item summary-warning">
-          <span class="summary-count">{{ state.warningCount }}</span>
-          <span class="summary-label">警告</span>
-        </div>
-        <div class="summary-item summary-pending">
-          <span class="summary-count">{{ state.pendingCells.size }}</span>
-          <span class="summary-label">待填写</span>
-        </div>
-      </div>
-
-      <!-- Tab切换 -->
-      <div class="panel-tabs">
-        <button
-          :class="['tab-btn', activeTab === 'errors' && 'active']"
-          @click="activeTab = 'errors'"
-        >
-          校验问题
-        </button>
-        <button
-          :class="['tab-btn', activeTab === 'pending' && 'active']"
-          @click="activeTab = 'pending'"
-        >
-          待填写
-        </button>
-      </div>
-
-      <!-- 校验问题列表 -->
-      <div v-if="activeTab === 'errors'" class="panel-body">
-        <template v-if="groupedErrors.length > 0">
-          <div
-            v-for="group in groupedErrors"
-            :key="group.row"
-            class="error-group"
-          >
-            <div class="group-header">第 {{ group.row + 1 }} 行</div>
-            <div
-              v-for="err in group.errors"
-              :key="`${err.row}-${err.col}-${err.messages[0]}`"
-              class="error-item"
-              :class="severityClass(err.severity)"
-              @click="navigateToCell(err.row, err.col)"
+      <!-- 分类抽屉：错误 / 警告 / 待填写（默认全部收起） -->
+      <div class="panel-body">
+        <template v-if="counts.total > 0">
+          <!-- 错误 -->
+          <div class="drawer drawer-error" :class="{ 'is-empty': counts.errors === 0 }">
+            <button
+              class="drawer-head"
+              type="button"
+              :disabled="counts.errors === 0"
+              :aria-expanded="isExpanded('errors')"
+              @click="toggle('errors')"
             >
-              <span class="error-severity">{{ severityLabel(err.severity) }}</span>
-              <span class="error-col">{{ getColName(err.col) }}：</span>
-              <span class="error-msg">{{ err.messages[0] }}</span>
-              <span v-if="err.messages.length > 1" class="error-more">
-                +{{ err.messages.length - 1 }}
-              </span>
+              <span class="drawer-arrow" :class="{ open: isExpanded('errors') }" aria-hidden="true"></span>
+              <span class="drawer-label">错误</span>
+              <span class="drawer-count">{{ counts.errors }}</span>
+            </button>
+
+            <div v-if="isExpanded('errors')" class="drawer-body">
+              <div v-for="group in errorGroups" :key="group.row" class="error-group">
+                <div class="group-header">第 {{ group.row + 1 }} 行</div>
+                <div
+                  v-for="err in group.errors"
+                  :key="`${err.row}-${err.col}-${err.messages[0]}`"
+                  class="error-item"
+                  :class="severityClass(err.severity)"
+                  @click="navigateToCell(err.row, err.col)"
+                >
+                  <span class="error-severity">{{ severityLabel(err.severity) }}</span>
+                  <span class="error-col">{{ getColName(err.col) }}：</span>
+                  <span class="error-msg">{{ err.messages[0] }}</span>
+                  <span v-if="err.messages.length > 1" class="error-more">
+                    +{{ err.messages.length - 1 }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 警告 -->
+          <div class="drawer drawer-warning" :class="{ 'is-empty': counts.warnings === 0 }">
+            <button
+              class="drawer-head"
+              type="button"
+              :disabled="counts.warnings === 0"
+              :aria-expanded="isExpanded('warnings')"
+              @click="toggle('warnings')"
+            >
+              <span class="drawer-arrow" :class="{ open: isExpanded('warnings') }" aria-hidden="true"></span>
+              <span class="drawer-label">警告</span>
+              <span class="drawer-count">{{ counts.warnings }}</span>
+            </button>
+
+            <div v-if="isExpanded('warnings')" class="drawer-body">
+              <div v-for="group in warningGroups" :key="group.row" class="error-group">
+                <div class="group-header">第 {{ group.row + 1 }} 行</div>
+                <div
+                  v-for="err in group.errors"
+                  :key="`${err.row}-${err.col}-${err.messages[0]}`"
+                  class="error-item"
+                  :class="severityClass(err.severity)"
+                  @click="navigateToCell(err.row, err.col)"
+                >
+                  <span class="error-severity">{{ severityLabel(err.severity) }}</span>
+                  <span class="error-col">{{ getColName(err.col) }}：</span>
+                  <span class="error-msg">{{ err.messages[0] }}</span>
+                  <span v-if="err.messages.length > 1" class="error-more">
+                    +{{ err.messages.length - 1 }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 待填写 -->
+          <div class="drawer drawer-pending" :class="{ 'is-empty': counts.pending === 0 }">
+            <button
+              class="drawer-head"
+              type="button"
+              :disabled="counts.pending === 0"
+              :aria-expanded="isExpanded('pending')"
+              @click="toggle('pending')"
+            >
+              <span class="drawer-arrow" :class="{ open: isExpanded('pending') }" aria-hidden="true"></span>
+              <span class="drawer-label">待填写</span>
+              <span class="drawer-count">{{ counts.pending }}</span>
+            </button>
+
+            <div v-if="isExpanded('pending')" class="drawer-body">
+              <div
+                v-for="item in pendingItems"
+                :key="item.key"
+                class="pending-item"
+                @click="navigateToCell(item.row, item.col)"
+              >
+                <span class="pending-icon">📋</span>
+                <span>第 {{ item.row + 1 }} 行 - {{ getColName(item.col) }}</span>
+                <span class="pending-desc">{{ item.description }}</span>
+              </div>
             </div>
           </div>
         </template>
-        <div v-else class="empty-hint">无校验问题</div>
-      </div>
 
-      <!-- 待填写列表 -->
-      <div v-if="activeTab === 'pending'" class="panel-body">
-        <template v-if="pendingList.length > 0">
-          <div
-            v-for="item in pendingList"
-            :key="item.key"
-            class="pending-item"
-            @click="navigateToCell(item.row, item.col)"
-          >
-            <span class="pending-icon">📋</span>
-            <span>第 {{ item.row + 1 }} 行 - {{ getColName(item.col) }}</span>
-            <span class="pending-desc">{{ item.description }}</span>
-          </div>
-        </template>
-        <div v-else class="empty-hint">无待填写项</div>
+        <div v-else class="empty-hint">无校验问题</div>
       </div>
 
       <!-- 底部操作 -->
@@ -110,44 +138,96 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { reactive, computed } from 'vue'
 import { Close } from '@element-plus/icons-vue'
-import { state, getAllCellErrors, startValidation, isValidationRunning, cancelValidation, schedulerProgress } from '../engine/validationStore'
+import { state, getAllCellErrors, startValidation, cancelValidation, schedulerProgress } from '../engine/validationStore'
 import { getDependencyDescriptions } from '../engine/dependencyTracker'
 import { HEADER_COLUMNS } from '../types'
+import type { CellError, Severity } from '../engine/types'
 
 defineProps<{ visible: boolean }>()
 defineEmits<{ close: [] }>()
 
-const activeTab = ref<'errors' | 'pending'>('errors')
+/** 分类键 */
+type Category = 'errors' | 'warnings' | 'pending'
 
-/** 按行分组的错误列表 */
-const groupedErrors = computed(() => {
-  // 访问size确保Vue响应式追踪
-  const _size = state.results.size
-  void _size
-  const allErrors = getAllCellErrors()
-  const rowMap = new Map<number, typeof allErrors>()
+/** 抽屉展开状态：默认全部收起（不做"有内容自动展开"） */
+const expanded = reactive<Record<Category, boolean>>({
+  errors: false,
+  warnings: false,
+  pending: false,
+})
 
-  allErrors.forEach((err) => {
+/** 严重度优先级（与 getAllCellErrors 取"最严重"的口径保持一致） */
+const SEVERITY_ORDER: Record<Severity, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2 }
+
+/**
+ * 分类计数（轻量路径）
+ * 默认收起时仅走这里：单次遍历 results 只做累加，不构建条目对象
+ * 口径 = 单元格数，与展开后的条目数完全一致
+ */
+const counts = computed(() => {
+  // 访问 size 确保 Vue 响应式追踪（既有写法）
+  void state.results.size
+  void state.pendingCells.size
+
+  let errors = 0
+  let warnings = 0
+  state.results.forEach((results) => {
+    if (!results.length) return
+    let worst = results[0].severity
+    for (const r of results) {
+      if (SEVERITY_ORDER[r.severity] < SEVERITY_ORDER[worst]) worst = r.severity
+    }
+    if (worst === 'CRITICAL') errors++
+    else warnings++
+  })
+
+  const pending = state.pendingCells.size
+  return { errors, warnings, pending, total: errors + warnings + pending }
+})
+
+/** 是否处于展开态（数量为 0 时强制收起，避免展开空抽屉） */
+function isExpanded(key: Category): boolean {
+  return expanded[key] && counts.value[key] > 0
+}
+
+/** 切换抽屉 */
+function toggle(key: Category) {
+  if (counts.value[key] === 0) return
+  expanded[key] = !expanded[key]
+}
+
+/** 按行分组（保持既有视觉：行标题 + 该行条目） */
+function groupByRow(list: CellError[]): { row: number; errors: CellError[] }[] {
+  const rowMap = new Map<number, CellError[]>()
+  list.forEach((err) => {
     const existing = rowMap.get(err.row) || []
     existing.push(err)
     rowMap.set(err.row, existing)
   })
-
-  const groups: { row: number; errors: typeof allErrors }[] = []
+  const groups: { row: number; errors: CellError[] }[] = []
   rowMap.forEach((errors, row) => {
     groups.push({ row, errors: errors.sort((a, b) => a.col - b.col) })
   })
-
   return groups.sort((a, b) => a.row - b.row)
+}
+
+/** 错误条目（仅展开时求值，computed 惰性） */
+const errorGroups = computed(() => {
+  void state.results.size
+  return groupByRow(getAllCellErrors().filter((e) => e.severity === 'CRITICAL'))
 })
 
-/** 待填写列表 */
-const pendingList = computed(() => {
-  // 访问size确保Vue响应式追踪
-  const _size = state.pendingCells.size
-  void _size
+/** 警告条目（HIGH / MEDIUM 统一归入警告类） */
+const warningGroups = computed(() => {
+  void state.results.size
+  return groupByRow(getAllCellErrors().filter((e) => e.severity !== 'CRITICAL'))
+})
+
+/** 待填写条目 */
+const pendingItems = computed(() => {
+  void state.pendingCells.size
   const items: { key: string; row: number; col: number; description: string }[] = []
   state.pendingCells.forEach((key) => {
     const [rowStr, colStr] = key.split('-')
@@ -203,29 +283,44 @@ function navigateToCell(row: number, col: number) {
       column: [col, col],
     })
 
-    // 3. 额外偏移，将目标单元格移到视口中央
+    // 3. 安全回退半屏，使目标单元格居中；触底时保持贴边（否则会把边缘单元格推出视口）
     setTimeout(() => {
-      const scrollbarX = document.querySelector('#luckysheet-scrollbar-x') as HTMLElement | null
-      const scrollbarY = document.querySelector('#luckysheet-scrollbar-y') as HTMLElement | null
-      const cellMain = document.querySelector('#luckysheet-cell-main') as HTMLElement | null
-      if (!scrollbarX || !scrollbarY || !cellMain) return
-
-      const halfW = cellMain.clientWidth / 2
-      const halfH = cellMain.clientHeight / 2
-
-      const newLeft = Math.max(0, scrollbarX.scrollLeft - halfW)
-      const newTop = Math.max(0, scrollbarY.scrollTop - halfH)
-
-      scrollbarX.scrollLeft = newLeft
-      scrollbarY.scrollTop = newTop
-
-      // 触发 scroll 事件让 Luckysheet 更新渲染
-      scrollbarX.dispatchEvent(new Event('scroll'))
-      scrollbarY.dispatchEvent(new Event('scroll'))
+      centerScrollbarSafely('#luckysheet-scrollbar-y', 'y')
+      centerScrollbarSafely('#luckysheet-scrollbar-x', 'x')
     }, 50)
   } catch {
     // 忽略失败
   }
+}
+
+/**
+ * 安全滚动：把目标从视口起点回退半屏使其居中，但绝不把目标推出视口。
+ *
+ * Luckysheet 的滚动条是伪滚动条，视觉滚动由该元素的 scroll 事件驱动
+ * （程序化赋值 scrollTop/scrollLeft 不会触发原生事件，故必须手动派发）。
+ *
+ * 边缘单元格跳转失效的根因：luckysheet.scroll() 设置的是目标行/列的左上角坐标，
+ * 当目标接近内容末尾时，scrollTop 会被浏览器钳到 max = scrollHeight - clientHeight，
+ * 此时目标贴在视口边缘；若再无条件下减半屏，视口会上移，目标反而落到视口之外。
+ * 因此仅在「未触底」时回退半屏，已触底时保持不动（贴边即完整可见）。
+ */
+function centerScrollbarSafely(selector: string, axis: 'y' | 'x') {
+  const el = document.querySelector(selector) as HTMLElement | null
+  if (!el) return
+
+  const viewport = axis === 'y' ? el.clientHeight : el.clientWidth
+  const max = axis === 'y'
+    ? el.scrollHeight - el.clientHeight
+    : el.scrollWidth - el.clientWidth
+  const cur = axis === 'y' ? el.scrollTop : el.scrollLeft
+
+  const next = max > 0 && cur < max ? Math.max(0, cur - viewport / 2) : cur
+
+  if (axis === 'y') el.scrollTop = next
+  else el.scrollLeft = next
+
+  // Luckysheet 依赖 scroll 事件驱动重绘
+  el.dispatchEvent(new Event('scroll'))
 }
 
 /** 重新校验 */
@@ -261,87 +356,128 @@ function refreshValidation() {
   color: #303133;
 }
 
-.panel-summary {
-  display: flex;
-  padding: 12px 16px;
-  gap: 12px;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.summary-item {
+.panel-body {
   flex: 1;
-  text-align: center;
-  padding: 8px 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+
+/* ==================== 分类抽屉 ==================== */
+
+.drawer {
   border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 8px;
 }
 
-.summary-count {
-  display: block;
-  font-size: 20px;
-  font-weight: 700;
-  line-height: 1.2;
+.drawer-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
 }
 
-.summary-label {
-  display: block;
+.drawer-head:disabled {
+  cursor: default;
+}
+
+.drawer-label {
+  flex-shrink: 0;
+}
+
+.drawer-count {
+  margin-left: auto;
+  flex-shrink: 0;
   font-size: 12px;
-  margin-top: 2px;
+  font-weight: 500;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.85);
 }
 
-.summary-error {
+/* 展开箭头（CSS 三角形，展开时旋转 90°） */
+.drawer-arrow {
+  flex-shrink: 0;
+  width: 0;
+  height: 0;
+  border-left: 4px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.15s ease;
+}
+
+.drawer-arrow.open {
+  transform: rotate(90deg);
+}
+
+.drawer-error .drawer-head {
   background: #fef0f0;
   color: #f56c6c;
 }
 
-.summary-warning {
+.drawer-error .drawer-head:hover:not(:disabled) {
+  background: #fce0e0;
+}
+
+.drawer-warning .drawer-head {
   background: #fdf6ec;
   color: #e6a23c;
 }
 
-.summary-pending {
+.drawer-warning .drawer-head:hover:not(:disabled) {
+  background: #fbebd6;
+}
+
+.drawer-pending .drawer-head {
   background: #f0f9eb;
   color: #67c23a;
 }
 
-.panel-tabs {
-  display: flex;
-  border-bottom: 1px solid #e4e7ed;
+.drawer-pending .drawer-head:hover:not(:disabled) {
+  background: #e5f5db;
 }
 
-.tab-btn {
-  flex: 1;
-  padding: 10px 0;
-  border: none;
-  background: none;
-  font-size: 13px;
-  color: #909399;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: all 0.2s;
+/* 数量为 0：置灰且不可点击 */
+.drawer.is-empty .drawer-head,
+.drawer.is-empty .drawer-head:hover {
+  background: #f5f7fa;
+  color: #c0c4cc;
 }
 
-.tab-btn:hover {
-  color: #409eff;
+.drawer-body {
+  background: #fff;
+  padding: 2px 0 6px;
+  animation: drawer-expand 0.16s ease-out;
 }
 
-.tab-btn.active {
-  color: #409eff;
-  border-bottom-color: #409eff;
-  font-weight: 500;
+@keyframes drawer-expand {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.panel-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px 0;
-}
+/* ==================== 条目 ==================== */
 
 .error-group {
   margin-bottom: 4px;
 }
 
 .group-header {
-  padding: 6px 16px;
+  padding: 6px 10px;
   font-size: 12px;
   color: #909399;
   background: #fafafa;
@@ -351,7 +487,7 @@ function refreshValidation() {
 .error-item {
   display: flex;
   align-items: flex-start;
-  padding: 8px 16px;
+  padding: 8px 10px;
   cursor: pointer;
   font-size: 13px;
   line-height: 1.5;
@@ -422,7 +558,7 @@ function refreshValidation() {
 .pending-item {
   display: flex;
   align-items: flex-start;
-  padding: 8px 16px;
+  padding: 8px 10px;
   cursor: pointer;
   font-size: 13px;
   line-height: 1.5;
