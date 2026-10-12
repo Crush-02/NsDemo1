@@ -9,6 +9,7 @@ import {
 import { validateConditionalRow, validateConditionalAll } from './conditionalValidator'
 import { validateAllCrossRow, validateCrossRowByCol } from './crossRowValidator'
 import { getAffectedTargetCols, isPendingRequired, getPendingCols } from './dependencyTracker'
+import { splitBySeverity } from './issueAggregator'
 import { ValidationScheduler, schedulerProgress } from './validationScheduler'
 
 export { schedulerProgress }
@@ -1043,6 +1044,21 @@ export function getAllCellErrors(): CellError[] {
     errors.push({ row, col, severity: worst.severity, messages: results.map((r) => r.message) })
   })
   return errors
+}
+
+/**
+ * 按「列 + 文案」聚合全表问题（房产模块）
+ *
+ * 供校验面板渲染：批量导入时同���类问题会成批出现
+ * （一整列没填就是两万条一样的警告），逐条渲染会产生约 13.7 万个
+ * DOM 节点，点开抽屉即卡死。聚合后 DOM 降至三位数。
+ *
+ * 实现见 engine/issueAggregator.ts（房产 / 应收两模块共用）。
+ *
+ * @returns errors = CRITICAL 组；warnings = HIGH / MEDIUM 组
+ */
+export function getAggregatedIssues() {
+  return splitBySeverity(getAllCellErrors)
 }
 
 // ==================== 分步校验调度器 ====================

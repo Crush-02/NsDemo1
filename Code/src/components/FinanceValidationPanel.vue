@@ -26,23 +26,16 @@
             </button>
 
             <div v-if="isExpanded('errors')" class="drawer-body">
-              <div v-for="group in errorGroups" :key="group.row" class="error-group">
-                <div class="group-header">第 {{ group.row + 1 }} 行</div>
-                <div
-                  v-for="err in group.errors"
-                  :key="`${err.row}-${err.col}-${err.messages[0]}`"
-                  class="error-item"
-                  :class="severityClass(err.severity)"
-                  @click="navigateToCell(err.row, err.col)"
-                >
-                  <span class="error-severity">{{ severityLabel(err.severity) }}</span>
-                  <span class="error-col">{{ getColName(err.col) }}：</span>
-                  <span class="error-msg">{{ err.messages[0] }}</span>
-                  <span v-if="err.messages.length > 1" class="error-more">
-                    +{{ err.messages.length - 1 }}
-                  </span>
-                </div>
-              </div>
+              <IssueList
+                :issues="errorIssues"
+                :expanded-keys="expandedIssueKeys"
+                :visible-counts="issueVisibleCounts"
+                :col-name="getColName"
+                label="错误"
+                @toggle-detail="toggleIssueDetail"
+                @load-more="loadMoreIssueRows"
+                @navigate="navigateToCell"
+              />
             </div>
           </div>
 
@@ -61,23 +54,16 @@
             </button>
 
             <div v-if="isExpanded('warnings')" class="drawer-body">
-              <div v-for="group in warningGroups" :key="group.row" class="error-group">
-                <div class="group-header">第 {{ group.row + 1 }} 行</div>
-                <div
-                  v-for="err in group.errors"
-                  :key="`${err.row}-${err.col}-${err.messages[0]}`"
-                  class="error-item"
-                  :class="severityClass(err.severity)"
-                  @click="navigateToCell(err.row, err.col)"
-                >
-                  <span class="error-severity">{{ severityLabel(err.severity) }}</span>
-                  <span class="error-col">{{ getColName(err.col) }}：</span>
-                  <span class="error-msg">{{ err.messages[0] }}</span>
-                  <span v-if="err.messages.length > 1" class="error-more">
-                    +{{ err.messages.length - 1 }}
-                  </span>
-                </div>
-              </div>
+              <IssueList
+                :issues="warningIssues"
+                :expanded-keys="expandedIssueKeys"
+                :visible-counts="issueVisibleCounts"
+                :col-name="getColName"
+                label="警告"
+                @toggle-detail="toggleIssueDetail"
+                @load-more="loadMoreIssueRows"
+                @navigate="navigateToCell"
+              />
             </div>
           </div>
 
@@ -97,7 +83,7 @@
 
             <div v-if="isExpanded('pending')" class="drawer-body">
               <div
-                v-for="item in pendingItems"
+                v-for="item in pendingItems.slice(0, pendingVisible)"
                 :key="item.key"
                 class="pending-item"
                 @click="navigateToCell(item.row, item.col)"
@@ -106,6 +92,14 @@
                 <span>第 {{ item.row + 1 }} 行 - {{ getColName(item.col) }}</span>
                 <span class="pending-desc">{{ item.description }}</span>
               </div>
+              <button
+                v-if="pendingItems.length > pendingVisible"
+                class="load-more-btn"
+                type="button"
+                @click="pendingVisible += PENDING_PAGE_SIZE"
+              >
+                显示更多（已显示 {{ pendingVisible }} / {{ pendingItems.length }}）
+              </button>
             </div>
           </div>
         </template>
@@ -138,18 +132,19 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, computed } from 'vue'
+import { reactive, computed, ref } from 'vue'
 import { Close } from '@element-plus/icons-vue'
 import {
   financeState as state,
-  getAllCellErrors,
+  getAggregatedIssues,
   startValidation,
   cancelValidation,
   financeSchedulerProgress,
 } from '../engine/finance/validationStore'
 import { getDependencyDescriptions } from '../engine/finance/dependencyTracker'
 import { FINANCE_HEADER_COLUMNS } from '../engine/finance/types'
-import type { CellError, Severity } from '../engine/types'
+import IssueList from './IssueList.vue'
+import type { Severity } from '../engine/types'
 
 defineProps<{ visible: boolean }>()
 defineEmits<{ close: [] }>()
@@ -204,32 +199,41 @@ function toggle(key: Category) {
   expanded[key] = !expanded[key]
 }
 
-/** 按行分组（保持既有视觉：行标题 + 该行条目） */
-function groupByRow(list: CellError[]): { row: number; errors: CellError[] }[] {
-  const rowMap = new Map<number, CellError[]>()
-  list.forEach((err) => {
-    const existing = rowMap.get(err.row) || []
-    existing.push(err)
-    rowMap.set(err.row, existing)
-  })
-  const groups: { row: number; errors: CellError[] }[] = []
-  rowMap.forEach((errors, row) => {
-    groups.push({ row, errors: errors.sort((a, b) => a.col - b.col) })
-  })
-  return groups.sort((a, b) => a.row - b.row)
+/**
+ * 聚合后的错误 / 警告分组（仅展开时求值，computed 惰性）
+ *
+ * 由 store 层 getAggregatedIssues() 完成「单次遍历 + 按(列,文案)归并」，
+ * 见 engine/issueAggregator.ts。房产 / 应收两面板共用同一套实现。
+ */
+const errorIssues = computed(() => {
+  void state.results.size
+  return getAggregatedIssues().errors
+})
+
+const warningIssues = computed(() => {
+  void state.results.size
+  return getAggregatedIssues().warnings
+})
+
+/** 展开了明细的组 key（跨两个抽屉共用，键含列号不会冲突） */
+const expandedIssueKeys = reactive(new Set<string>())
+
+/** 每组当前已渲染的明细条数：key → 条数 */
+const issueVisibleCounts = reactive<Record<string, number>>({})
+
+/** 明细首屏渲染条数上限 */
+const ISSUE_PAGE_SIZE = 100
+
+/** 展开 / 收起某组明细；收起时不重置计数，便于再次展开回到原处 */
+function toggleIssueDetail(key: string) {
+  if (expandedIssueKeys.has(key)) expandedIssueKeys.delete(key)
+  else expandedIssueKeys.add(key)
 }
 
-/** 错误条目（仅展开时求值，computed 惰性） */
-const errorGroups = computed(() => {
-  void state.results.size
-  return groupByRow(getAllCellErrors().filter((e) => e.severity === 'CRITICAL'))
-})
-
-/** 警告条目（HIGH / MEDIUM 统一归入警告类） */
-const warningGroups = computed(() => {
-  void state.results.size
-  return groupByRow(getAllCellErrors().filter((e) => e.severity !== 'CRITICAL'))
-})
+/** 「显示更多」：单组明细再加一批 */
+function loadMoreIssueRows(key: string) {
+  issueVisibleCounts[key] = (issueVisibleCounts[key] ?? ISSUE_PAGE_SIZE) + ISSUE_PAGE_SIZE
+}
 
 /** 待填写条目 */
 const pendingItems = computed(() => {
@@ -245,23 +249,14 @@ const pendingItems = computed(() => {
   return items.sort((a, b) => a.row - b.row || a.col - b.col)
 })
 
+/** 待填写首屏渲染条数（4.4 万行场景下 pendingCells 也可能有数万条） */
+const PENDING_PAGE_SIZE = 100
+/** 待填写当前已渲染条数 */
+const pendingVisible = ref(PENDING_PAGE_SIZE)
+
 /** 获取列名 */
 function getColName(col: number): string {
   return FINANCE_HEADER_COLUMNS[col]?.label || `列${col}`
-}
-
-/** 严重度样式 */
-function severityClass(severity: string): string {
-  if (severity === 'CRITICAL') return 'severity-critical'
-  if (severity === 'HIGH') return 'severity-high'
-  return 'severity-medium'
-}
-
-/** 严重度标签 */
-function severityLabel(severity: string): string {
-  if (severity === 'CRITICAL') return '错误'
-  if (severity === 'HIGH') return '警告'
-  return '提示'
 }
 
 /** 导航到单元格（选中 + 滚动到视口中央） */
@@ -461,55 +456,10 @@ function refreshValidation() {
 
 /* ==================== 条目 ==================== */
 
-.error-group { margin-bottom: 4px; }
-
-.group-header {
-  padding: 6px 10px;
-  font-size: 12px;
-  color: #909399;
-  background: #fafafa;
-  font-weight: 500;
-}
-
-.error-item {
-  display: flex;
-  align-items: flex-start;
-  padding: 8px 10px;
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1.5;
-  gap: 4px;
-  transition: background 0.15s;
-}
-
-.error-item:hover { background: #f5f7fa; }
-
-.error-severity {
-  flex-shrink: 0;
-  font-size: 11px;
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-weight: 500;
-}
-
-.severity-critical .error-severity { background: #fef0f0; color: #f56c6c; }
-.severity-high .error-severity { background: #fdf6ec; color: #e6a23c; }
-.severity-medium .error-severity { background: #fdf6ec; color: #e6a23c; }
-.severity-critical .error-msg { color: #f56c6c; }
-.severity-high .error-msg { color: #e6a23c; }
-.severity-medium .error-msg { color: #e6a23c; }
-
-.error-col { color: #606266; flex-shrink: 0; font-weight: 500; }
-.error-msg { flex: 1; color: #606266; word-break: break-all; }
-
-.error-more {
-  flex-shrink: 0;
-  font-size: 11px;
-  color: #909399;
-  background: #f0f0f0;
-  padding: 0 4px;
-  border-radius: 3px;
-}
+/* overflow-wrap: break-word 只在「单个长单词/长串超过容器宽度」时才断行，
+   中文（以及中英混排）走浏览器原生 CJK 断行路径，速度远快于逐字符测宽。
+   原 word-break: break-all 会强制逐字符断行，在 19,233 条规模下
+   单次布局需计算 13.7 万个盒模型，是抽屉展开卡死的主要放大因素。 */
 
 .pending-item {
   display: flex;
@@ -525,6 +475,23 @@ function refreshValidation() {
 
 .pending-item:hover { background: #f5f7fa; }
 .pending-icon { flex-shrink: 0; }
+
+/* 「显示更多」按钮（待填写限量的兜底；错误/警告抽屉内的同名样式在 IssueList 中） */
+.load-more-btn {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 6px 10px;
+  padding: 5px 0;
+  font-size: 12px;
+  color: #606266;
+  background: #f5f7fa;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.load-more-btn:hover { background: #ecf5ff; color: #409eff; }
 
 .pending-desc {
   width: 100%;

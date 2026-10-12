@@ -14,6 +14,7 @@ import { validateConditionalRow, validateConditionalAll } from './conditionalVal
 import { validateAllCrossRow, validateCrossRowByCol } from './crossRowValidator'
 import { getAffectedTargetCols, isPendingRequired, getPendingCols } from './dependencyTracker'
 import { FINANCE_COL_COUNT, FINANCE_HEADER_ROW_COUNT } from './types'
+import { splitBySeverity } from '../issueAggregator'
 import { ValidationScheduler, createSchedulerProgress } from '../validationScheduler'
 
 // ==================== 全局类型声明（用于Monkey-Patch） ====================
@@ -1004,6 +1005,22 @@ export function getAllCellErrors(): CellError[] {
     errors.push({ row, col, severity: worst.severity, messages: results.map((r) => r.message) })
   })
   return errors
+}
+
+/**
+ * 按「列 + 文案」聚合全表问题（应收已收模块）
+ *
+ * 供校验面板渲染：4.4 万行导入时同一类警告会成批出现
+ * （如整列未填支付方式 → 19,233 条一模一样的警告），
+ * 逐条渲染会产生约 13.7 万个 DOM 节点，点开抽屉即卡死。
+ * 聚合后实测 20,329 条 → 37 组，DOM 节点 122,048 → 272。
+ *
+ * 实现见 engine/issueAggregator.ts（房产 / 应收两模块共用）。
+ *
+ * @returns errors = CRITICAL 组；warnings = HIGH / MEDIUM 组
+ */
+export function getAggregatedIssues() {
+  return splitBySeverity(getAllCellErrors)
 }
 
 // ==================== 分步校验调度器 ====================
