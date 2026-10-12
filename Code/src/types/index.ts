@@ -41,7 +41,7 @@ export interface LuckysheetGlobal {
   destroy: () => void
 }
 
-/** 表头列配置 - 30列（以房产数据导入-SaaS版模板为准） */
+/** 表头列配置 - 32列（以房产数据导入-SaaS版模板为准） */
 export const HEADER_COLUMNS: HeaderColumn[] = [
   { field: 'projectName', label: '项目名称', width: 120, colIndex: 0 },
   { field: 'areaName', label: '管理区域名称', width: 120, colIndex: 1 },

@@ -613,7 +613,11 @@ function initLuckysheet(extraCelldata?: CellData[]) {
         },
         // 行数跟随实际数据：row 同时决定滚动条范围与网格尺寸
         row: gridData.length,
-        column: 30,
+        // 列数同样跟随实际数据。注意：本项目走 `data`（二维数组）建表路径，
+        // Luckysheet 的 buildGridData 在有 data 时会完全忽略 column，
+        // 实际列数取自 gridData[0].length。此处保留是为了语义完整 + 防止将来
+        // 切换回 celldata 建表时列数被截断（历史遗留值 30 与 32 列定义不符）。
+        column: HEADER_COLUMNS.length,
         defaultRowHeight: 26,
         defaultColWidth: 100,
         frozen: { type: 'row' },
@@ -634,13 +638,18 @@ function initLuckysheet(extraCelldata?: CellData[]) {
         // 1. __isBulkDeleting: handleBulkDelete 正在执行时阻止所有操作
         // 2. __isBulkProcessing: BatchDefender 检测到批量操作后阻止所有操作
         //    （包括编辑和删除），因为 handleBulkEdit/handleBulkDelete 会统一处理
+        //
+        // 说明：这里曾有第三条 `Date.now() - __lastBulkDeleteTime < 3000` 时间窗拦截，
+        // 已移除 —— 它是「粗粒度近似」，而本函数是全局写入门禁：
+        //   · 时间窗从 handleBulkDelete 的 finally 起算，覆盖删除完成后的 3 秒
+        //   · 期间用户任何正常输入（含单格键入）都会被 cancelNormalSelected 拒绝
+        //   · 该拦截的原意（防止 cellMousedown 二次触发）由 cellMousedown 中的
+        //     同款时间窗承担，且那一处位于「大选区」分支内，影响面可控
+        // 两个标志位已精确覆盖批量操作本身的执行窗口，无需时间窗兜底。
         if ((window as any).__isBulkDeleting) {
           return false
         }
         if ((window as any).__isBulkProcessing) {
-          return false
-        }
-        if (Date.now() - (window as any).__lastBulkDeleteTime < 3000) {
           return false
         }
       },
@@ -1012,8 +1021,10 @@ onBeforeUnmount(() => {
   stopAutoSave()
   document.removeEventListener('mousedown', captureMouseEvent)
   // 清理Shift+滚轮监听
+  // 注意：必须带 capture:true —— 注册时用了 { capture: true }，
+  // removeEventListener 的 capture 不一致则解绑无效（会累积泄漏）
   if (shiftScrollHandler) {
-    document.removeEventListener('wheel', shiftScrollHandler)
+    document.removeEventListener('wheel', shiftScrollHandler, { capture: true })
     shiftScrollHandler = null
   }
   // 清理键盘拦截器
@@ -1048,7 +1059,7 @@ let shiftScrollHandler: ((e: WheelEvent) => void) | null = null
 
 function setupShiftScroll() {
   if (shiftScrollHandler) {
-    document.removeEventListener('wheel', shiftScrollHandler)
+    document.removeEventListener('wheel', shiftScrollHandler, { capture: true })
   }
 
   shiftScrollHandler = (e: WheelEvent) => {

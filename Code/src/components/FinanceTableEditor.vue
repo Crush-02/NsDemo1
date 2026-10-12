@@ -640,20 +640,26 @@ function initLuckysheet(extraCelldata?: CellData[]) {
         // 1. __isBulkDeleting: handleBulkDelete 正在执行时阻止所有操作
         // 2. __isBulkProcessing: BatchDefender 检测到批量操作后阻止所有操作
         //    （包括编辑和删除），因为 handleBulkEdit/handleBulkDelete 会统一处理
+        //
+        // 说明：原有的 `Date.now() - __lastBulkDeleteTime < 3000` 时间窗已移除。
+        // 本函数是全局写入门禁，时间窗会连带拒绝删除完成后的正常输入；
+        // 防二次触发的职责由 cellMousedown 中（同款时间窗、位于大选区分支内）承担。
         if ((window as any).__isBulkDeleting) {
           return false
         }
         if ((window as any).__isBulkProcessing) {
           return false
         }
-        if (Date.now() - (window as any).__lastBulkDeleteTime < 3000) {
-          return false
-        }
       },
-      cellUpdated(r: number, c: number) {
+      // 签名与 TableEditor 保持一致：Luckysheet 实际传入
+      // (row, col, oldValue, newValue, isRefresh) 共 5 个参数。
+      // 此前只声明 (r, c) 并把 oldValue/newValue 写死为 null，
+      // 导致 handleCellUpdate 的 isEmptyValue 恒为 true、operationType 恒判为 'DELETE'，
+      // 与房产侧行为漂移（财务侧的批量编辑主路径由 cellMousedown 快照比对驱动，故未致命）。
+      cellUpdated(r: number, c: number, oldValue: any, newValue: any, isRefresh: boolean) {
         if (r < FINANCE_HEADER_ROW_COUNT) return
         // 使用批量操作防御系统处理更新（内部会处理lastEditedCell和onCellInput）
-        handleCellUpdate(r, c, null, null)
+        handleCellUpdate(r, c, oldValue, newValue)
       },
       cellMousedown() {
         // 检测上次选中区域中所有单元格值是否变化
@@ -1100,7 +1106,8 @@ defineExpose({ importData, validateBeforeExport, exportExcel })
 let shiftScrollHandler: ((e: WheelEvent) => void) | null = null
 
 function setupShiftScroll() {
-  if (shiftScrollHandler) document.removeEventListener('wheel', shiftScrollHandler)
+  // 必须带 capture:true —— 与下面的 addEventListener 一致，否则解绑无效
+  if (shiftScrollHandler) document.removeEventListener('wheel', shiftScrollHandler, { capture: true })
   shiftScrollHandler = (e: WheelEvent) => {
     if (!e.shiftKey) return
     const el = e.target as HTMLElement | null
@@ -1149,7 +1156,7 @@ onBeforeUnmount(() => {
   stopAutoSave()
   document.removeEventListener('mousedown', captureMouseEvent)
   if (shiftScrollHandler) {
-    document.removeEventListener('wheel', shiftScrollHandler)
+    document.removeEventListener('wheel', shiftScrollHandler, { capture: true })
     shiftScrollHandler = null
   }
   // 清理键盘拦截器

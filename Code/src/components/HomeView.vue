@@ -40,7 +40,7 @@
               <div class="card-tags">
                 <span class="tag tag-blue">房产管理</span>
                 <span class="tag tag-green">数据校验</span>
-                <span class="tag tag-orange">30列字段</span>
+                <span class="tag tag-orange">32列字段</span>
               </div>
             </div>
             <div class="card-action">
